@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/main.css?v=6" />
+  <link rel="stylesheet" href="/css/main.css?v=7" />
 </head>
 <body>
   <div id="app">
@@ -175,19 +175,22 @@
       </aside>
       <main class="stage">
         <div id="turn-banner" class="turn-banner">Aguardando turno...</div>
-        <canvas id="game-canvas" width="720" height="480"></canvas>
-        <div class="narrative" id="narrative-log"></div>
+        <div class="narrative" id="narrative-log" aria-live="polite"></div>
         <form id="form-action" class="action-form" autocomplete="off">
-          <input id="input-action" maxlength="400" placeholder="O que você faz?" required />
+          <input id="input-action" maxlength="400" placeholder="Descreva o que seu personagem faz na história..." required />
           <button type="submit" class="btn">AGIR</button>
         </form>
         <p id="action-error" class="error"></p>
+        <div class="scene-board">
+          <p class="scene-label muted tiny">Tabuleiro tático (combate)</p>
+          <canvas id="game-canvas" width="720" height="480"></canvas>
+        </div>
       </main>
     </section>
   </div>
 
-  <script src="/js/socket.io.min.js?v=6"></script>
-  <script src="/js/game/renderer.js?v=6"></script>
-  <script src="/js/app.js?v=6"></script>
+  <script src="/js/socket.io.min.js?v=7"></script>
+  <script src="/js/game/renderer.js?v=7"></script>
+  <script src="/js/app.js?v=7"></script>
 </body>
 </html>

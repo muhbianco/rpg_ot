@@ -116,6 +116,7 @@ function serializeSession(session) {
     mapH: session.mapH,
     encounterBudget: session.encounterBudget,
     scale: session.scale,
+    adventure: session.adventure || null,
     characters: session.characters,
     enemies: session.enemies,
     world: session.world,

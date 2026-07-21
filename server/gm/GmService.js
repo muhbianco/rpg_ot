@@ -1,19 +1,65 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const config = require('../config');
 
-const SYSTEM_PROMPT = `Você é o Mestre de uma mesa de RPG no universo Tormenta (Arton).
-Estilo: narrativo, vívido, conciso (2–4 frases). Tom de taverna/aventura.
+const SYSTEM_PROMPT = `Você é o Mestre de uma mesa de RPG Tormenta20 (Arton).
+Estilo: RPG de mesa narrativo — história viva, diálogos, exploração, tensão e consequências.
+NÃO é dungeon crawler: o tabuleiro só ilustra combate; a narrativa é o centro.
+
 Regras obrigatórias:
 - NÃO role dados e NÃO invente números de dano/cura/HP.
-- NÃO invente itens, poderes ou aliados que não estejam no estado.
+- NÃO invente itens, poderes, magias ou aliados que não estejam no estado do ator.
+- Magias: SÓ use type "cast" e spellKey se a magia estiver em actor.spells.
+- Habilidades: SÓ use type "skill" e skillKey se estiver em actor.skills com rank > 0.
+- Se o jogador pedir algo que não conhece (ex.: Guerreiro pedindo bola de fogo), narre a falha
+  (ele tenta e nada acontece / não sabe aquela magia) e use intent "wait" ou "inspect" — NUNCA cast/skill inválido.
 - Responda APENAS JSON válido no schema pedido.
 - partySize afeta a tensão: party grande = mundo mais hostil.
-- Se mercyScore do ator for alto, dê "colher de chá": pistas, inimigos hesitam, saídas narrativas — sem quebrar o desafio por completo.
-- intents devem refletir a ação do jogador (attack/move/cast/skill/inspect/talk/use_item/wait).
-- Para magias use spellKey: missil_magico | bola_de_fogo | cura_ferimentos | luz quando couber.
-- Para habilidades de classe use type "skill" e skillKey (ex: ataque_especial, ataque_furtivo, canalizar_energia, missil_magico).
-- Só use skill se o ator tiver a habilidade listada em skills.
-- targetId pode ser nome do inimigo, id, "self", ou null.`;
+- Se mercyScore do ator for alto, dê "colher de chá": pistas, NPCs hesitam, saídas narrativas.
+- intents devem refletir a ação real possível do personagem (attack/move/cast/skill/inspect/talk/use_item/wait).
+- spellKey válidos apenas se o ator tiver: missil_magico | bola_de_fogo | cura_ferimentos | luz.
+- Continuidade: cada sessão é uma aventura ÚNICA — avance a trama, não reinicie a taverna genérica.`;
+
+const ADVENTURE_SEEDS = [
+  {
+    title: 'O Cálice Roubado',
+    setting: 'Taverna de Arton, noite chuvosa',
+    hook: 'O taberneiro grita que o cálice sagrado de Valkaria sumiu do altar improvisado atrás do balcão.',
+  },
+  {
+    title: 'Sombras na Estrada Real',
+    setting: 'Acampamento à beira da Estrada Real',
+    hook: 'Um mensageiro sangrando cai entre as fogueiras pedindo escolta até o próximo posto — alguém o segue.',
+  },
+  {
+    title: 'A Barganha do Corvo',
+    setting: 'Mercado noturno de um vilarejo',
+    hook: 'Um corvo mecânico entrega um bilhete: "Tragam a pedra azul antes do amanhecer, ou a criança some."',
+  },
+  {
+    title: 'Ruínas do Deus da Tormenta',
+    setting: 'Ruínas semi-afundadas sob névoa',
+    hook: 'Runas antigas pulsam; algo desperta sob as pedras e pede um nome em troca de passagem.',
+  },
+  {
+    title: 'Motim no Porto',
+    setting: 'Doca fedorenta ao amanhecer',
+    hook: 'Marinheiros cercam um capitão acusado de vender a tripulação a cultistas — a verdade não é simples.',
+  },
+  {
+    title: 'O Funeral Que Não Era',
+    setting: 'Capela de madeira na colina',
+    hook: 'O caixão está vazio. A viúva jura ter visto o morto andando na névoa com olhos de fogo.',
+  },
+];
+
+function knownSpellSet(actor) {
+  return new Set(actor?.spells || []);
+}
+
+function knownSkillSet(actor) {
+  const ranks = actor?.skillRanks || {};
+  return new Set(Object.keys(ranks).filter((k) => ranks[k] > 0));
+}
 
 class GmService {
   constructor() {
@@ -24,7 +70,7 @@ class GmService {
       this.model = this.genAI.getGenerativeModel({
         model: this.modelName,
         generationConfig: {
-          temperature: 0.7,
+          temperature: 0.85,
           maxOutputTokens: 1024,
           responseMimeType: 'application/json',
         },
@@ -32,16 +78,63 @@ class GmService {
     }
   }
 
+  pickAdventureSeed() {
+    return ADVENTURE_SEEDS[Math.floor(Math.random() * ADVENTURE_SEEDS.length)];
+  }
+
+  /**
+   * Remove intents de magia/habilidade que o personagem não possui.
+   */
+  sanitizeForActor(actor, gmOut) {
+    const out = gmOut || { narrative: '', intents: [] };
+    const spells = knownSpellSet(actor);
+    const skills = knownSkillSet(actor);
+    const intents = [];
+    let blocked = false;
+
+    for (const intent of out.intents || []) {
+      const type = intent?.type || 'wait';
+      if (type === 'cast') {
+        const key = intent.spellKey || intent.skillHint;
+        if (!key || !spells.has(key)) {
+          blocked = true;
+          continue;
+        }
+      }
+      if (type === 'skill') {
+        const key = intent.skillKey || intent.skillHint;
+        if (!key || !skills.has(key)) {
+          blocked = true;
+          continue;
+        }
+      }
+      intents.push(intent);
+    }
+
+    if (blocked) {
+      if (!intents.length) intents.push({ type: 'wait' });
+      const note = `${actor.name} tenta algo além do que sabe fazer — a magia ou o poder não responde.`;
+      const nar = String(out.narrative || '').trim();
+      if (!/não (conhece|sabe)|além do que sabe|não responde/i.test(nar)) {
+        out.narrative = nar ? `${nar} ${note}` : note;
+      }
+    }
+
+    out.intents = intents;
+    return out;
+  }
+
   async narrate({ action, actor, session, memory, mercy }) {
     const context = {
       action,
+      adventure: session.adventure || null,
       actor: {
         name: actor.name,
         class: actor.classLabel || actor.classKey,
         hp: `${actor.hp}/${actor.hpMax}`,
         mp: `${actor.mp}/${actor.mpMax}`,
         status: actor.status,
-        spells: actor.spells,
+        spells: actor.spells || [],
         skills: Object.entries(actor.skillRanks || {})
           .filter(([, r]) => r > 0)
           .map(([k, r]) => ({ key: k, rank: r })),
@@ -59,11 +152,10 @@ class GmService {
         y: c.y,
       })),
       memory: (memory || '').slice(-1500),
-      map: 'Taverna de Arton',
     };
 
     if (!this.enabled) {
-      return this.fallback(action, actor, session, mercy);
+      return this.sanitizeForActor(actor, this.fallback(action, actor, session, mercy));
     }
 
     try {
@@ -74,7 +166,7 @@ ${JSON.stringify(context, null, 2)}
 
 Schema JSON:
 {
-  "narrative": "string",
+  "narrative": "string (2–5 frases, tom de mesa de RPG)",
   "intents": [{"type":"attack|move|inspect|talk|cast|skill|use_item|wait","targetId":"string|null","spellKey":"string|null","skillKey":"string|null","dx":0,"dy":0,"skillHint":"string|null"}],
   "sceneHints": {"mood":"string","focusEntityId":"string|null"},
   "mercyNotes": "string|null"
@@ -84,11 +176,60 @@ Schema JSON:
       const text = result.response.text();
       const parsed = JSON.parse(this.extractJson(text));
       if (!parsed.intents) parsed.intents = [];
-      if (!parsed.narrative) parsed.narrative = 'Algo se move nas sombras da taverna.';
-      return parsed;
+      if (!parsed.narrative) parsed.narrative = 'O mestre descreve a cena em silêncio tenso.';
+      return this.sanitizeForActor(actor, parsed);
     } catch (err) {
       console.error('[gm] gemini falhou, usando fallback:', err.message);
-      return this.fallback(action, actor, session, mercy);
+      return this.sanitizeForActor(actor, this.fallback(action, actor, session, mercy));
+    }
+  }
+
+  /**
+   * Abertura narrativa única da sessão (IA ou seed).
+   */
+  async generateIntro(session) {
+    const adventure = session.adventure || this.pickAdventureSeed();
+    const party = Object.values(session.characters).map((c) => `${c.name} (${c.classLabel || c.classKey})`);
+    const enemies = session.enemies.filter((e) => e.hp > 0).map((e) => e.name);
+
+    if (!this.enabled) {
+      return {
+        narrative:
+          `Aventura: ${adventure.title}. ${adventure.setting}. ${adventure.hook} ` +
+          `Presentes: ${party.join(', ')}.` +
+          (enemies.length ? ` Ameaças à vista: ${enemies.join(', ')}.` : ''),
+        adventure,
+      };
+    }
+
+    try {
+      const prompt = `Você é o Mestre de Tormenta20. Escreva a ABERTURA de uma aventura de mesa ÚNICA.
+Semente: ${JSON.stringify(adventure)}
+Party: ${party.join(', ')}
+Possíveis ameaças no cenário: ${enemies.join(', ') || 'nenhuma ainda'}
+
+Responda APENAS JSON:
+{
+  "title": "string",
+  "setting": "string",
+  "narrative": "3–6 frases vividas abrindo a cena. Sem números de combate. Convide a party a agir."
+}`;
+      const result = await this.model.generateContent(prompt);
+      const parsed = JSON.parse(this.extractJson(result.response.text()));
+      return {
+        narrative: parsed.narrative || `${adventure.hook}`,
+        adventure: {
+          title: parsed.title || adventure.title,
+          setting: parsed.setting || adventure.setting,
+          hook: adventure.hook,
+        },
+      };
+    } catch (err) {
+      console.error('[gm] intro falhou:', err.message);
+      return {
+        narrative: `${adventure.title}. ${adventure.setting}. ${adventure.hook}`,
+        adventure,
+      };
     }
   }
 
@@ -102,21 +243,40 @@ Schema JSON:
   fallback(action, actor, session, mercy) {
     const lower = action.toLowerCase();
     const enemy = session.enemies.find((e) => e.hp > 0);
+    const spells = knownSpellSet(actor);
     const intents = [];
-    let narrative = `${actor.name} observa o salão de madeira escura da Taverna de Arton.`;
+    let narrative = `${actor.name} observa a cena com atenção.`;
 
     if (/atac|golpe|bater|ferir|lutar|espada|adaga/.test(lower) && enemy) {
-      narrative = `${actor.name} avança entre as mesas em direção a ${enemy.name}. Tochas tremulam; o cheiro de cerveja mistura-se à tensão.`;
+      narrative = `${actor.name} avança em direção a ${enemy.name}, pronto para o embate.`;
       intents.push({ type: 'attack', targetId: enemy.name });
     } else if (/cura|curar|heal/.test(lower)) {
-      narrative = `${actor.name} canaliza a bênção de uma divindade de Arton, luz suave envolvendo as feridas.`;
-      intents.push({ type: 'cast', spellKey: 'cura_ferimentos', targetId: 'self' });
-    } else if (/bola|fogo|míssil|missil|magia|feiti/.test(lower)) {
-      const spell = /bola|fogo/.test(lower) ? 'bola_de_fogo' : 'missil_magico';
-      narrative = `${actor.name} traça runas no ar; energia arcana vibra sob o teto baixo da taverna.`;
-      intents.push({ type: 'cast', spellKey: spell, targetId: enemy?.name || null });
+      if (spells.has('cura_ferimentos')) {
+        narrative = `${actor.name} canaliza uma bênção, luz suave envolvendo as feridas.`;
+        intents.push({ type: 'cast', spellKey: 'cura_ferimentos', targetId: 'self' });
+      } else {
+        narrative = `${actor.name} tenta invocar uma cura, mas não conhece essa magia.`;
+        intents.push({ type: 'wait' });
+      }
+    } else if (/bola|fogo|míssil|missil|magia|feiti|feitiço/.test(lower)) {
+      let spell = null;
+      if (/bola|fogo/.test(lower) && spells.has('bola_de_fogo')) spell = 'bola_de_fogo';
+      else if (/míssil|missil/.test(lower) && spells.has('missil_magico')) spell = 'missil_magico';
+      else if (spells.has('missil_magico')) spell = 'missil_magico';
+      else if (spells.has('bola_de_fogo')) spell = 'bola_de_fogo';
+
+      if (spell) {
+        narrative = `${actor.name} traça runas no ar; energia arcana vibra na cena.`;
+        intents.push({ type: 'cast', spellKey: spell, targetId: enemy?.name || null });
+      } else {
+        const cls = actor.classLabel || actor.classKey || 'aventureiro';
+        narrative =
+          `${actor.name} concentra-se e tenta conjurar... mas como ${cls} não conhece essa magia. ` +
+          `Nada acontece além do olhar curioso dos presentes.`;
+        intents.push({ type: 'wait' });
+      }
     } else if (/anda|vou|corro|mov|norte|sul|leste|oeste/.test(lower)) {
-      narrative = `${actor.name} se desloca pelo piso de tábuas rangentes.`;
+      narrative = `${actor.name} se desloca pelo cenário.`;
       let dx = 0;
       let dy = 0;
       if (/norte|cima/.test(lower)) dy = -1;
@@ -127,14 +287,14 @@ Schema JSON:
       intents.push({ type: 'move', dx, dy });
     } else if (/inspec|olho|procuro|olhar|exam/.test(lower)) {
       narrative = mercy.score >= 0.4
-        ? `${actor.name} nota uma porta lateral entreaberta e um goblin distraído — uma chance clara.`
-        : `${actor.name} examina o salão: mesas, um balcão e criaturas hostis à espreita.`;
+        ? `${actor.name} nota um detalhe útil — uma pista clara na cena.`
+        : `${actor.name} examina o entorno com cuidado.`;
       intents.push({ type: 'inspect' });
     } else if (/falo|convers|digo|oi|olá/.test(lower)) {
-      narrative = `Palavras ecoam na taverna. Nem todos os presentes parecem dispostos a negociar.`;
+      narrative = `Palavras ecoam. Nem todos parecem dispostos a negociar.`;
       intents.push({ type: 'talk', targetId: enemy?.name || null });
     } else {
-      narrative = `${actor.name} age: "${action}". O ambiente responde com murmúrios e o ranger de madeira.`;
+      narrative = `${actor.name} age: "${action}". A cena responde.`;
       intents.push({ type: 'wait' });
     }
 

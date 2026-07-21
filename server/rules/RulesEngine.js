@@ -16,6 +16,10 @@ class RulesEngine {
   resolveSpell(caster, target, spellKey) {
     const spell = SPELLS[spellKey];
     if (!spell) return { type: 'spell', ok: false, reason: 'Magia desconhecida.' };
+    const known = caster.spells || [];
+    if (!known.includes(spellKey)) {
+      return { type: 'spell', ok: false, reason: `${caster.name} não conhece ${spell.label}.` };
+    }
     if ((caster.mp || 0) < spell.cost) {
       return { type: 'spell', ok: false, reason: 'PM insuficientes.' };
     }

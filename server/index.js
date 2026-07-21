@@ -621,7 +621,7 @@ async function bootstrap() {
       reply(out);
     });
 
-    socket.on('party:ready', (data, cb) => {
+    socket.on('party:ready', async (data, cb) => {
       const reply = typeof cb === 'function' ? cb : () => {};
       const player = sockets.get(socket.id);
       if (!player) return reply({ ok: false, error: 'Não autenticado.' });
@@ -642,7 +642,7 @@ async function bootstrap() {
           emitSessionToParty(session);
 
           // Mestre (IA) sempre começa primeiro — turno de abertura automático.
-          const opening = games.openingTurn(session);
+          const opening = await games.openingTurn(session);
           emitSegment(party.id, opening.segment);
           emitSessionToParty(session);
           emitTurn(session);

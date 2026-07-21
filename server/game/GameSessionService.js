@@ -81,6 +81,8 @@ class GameSessionService {
       });
     }
 
+    const adventure = this.gm.pickAdventureSeed();
+
     const session = {
       id: uuidv4(),
       partyId: party.id,
@@ -89,6 +91,7 @@ class GameSessionService {
       mapH: MAP_H,
       encounterBudget: scale.budget,
       scale,
+      adventure,
       characters,
       enemies,
       world: {
@@ -119,7 +122,7 @@ class GameSessionService {
     GameFinder.saveSession(session).catch(() => {});
     GameFinder.saveGmMemory(
       session.id,
-      `Sessão iniciada na Taverna de Arton. Party de ${partySize}. Inimigos: ${enemies.map((e) => e.name).join(', ')}.`
+      `Aventura: ${adventure.title}. Cenário: ${adventure.setting}. Gancho: ${adventure.hook}. Party de ${partySize}. Ameaças: ${enemies.map((e) => e.name).join(', ') || 'nenhuma'}.`
     ).catch(() => {});
 
     return session;
@@ -155,6 +158,7 @@ class GameSessionService {
       mapH: snapshot.mapH || MAP_H,
       encounterBudget: snapshot.encounterBudget || 1,
       scale: snapshot.scale || { partySize: Object.keys(snapshot.characters || {}).length || 1 },
+      adventure: snapshot.adventure || null,
       characters: snapshot.characters || {},
       enemies: snapshot.enemies || [],
       world: snapshot.world || {
@@ -371,26 +375,43 @@ class GameSessionService {
 
     let narrative;
     if (intro) {
-      narrative = livingEnemies.length
-        ? `A cena se abre na Taverna de Arton. ${livingEnemies.map((e) => e.name).join(', ')} encaram a party com hostilidade. Preparem-se.`
-        : 'A cena se abre na Taverna de Arton. O salão está tenso e silencioso.';
+      const adv = session.adventure;
+      const threat = livingEnemies.length
+        ? ` ${livingEnemies.map((e) => e.name).join(', ')} estão à espreita.`
+        : '';
+      narrative = adv
+        ? `Aventura: ${adv.title}. ${adv.setting}. ${adv.hook}${threat}`
+        : `A cena se abre.${threat}`;
     } else if (combat.some((c) => c.summary)) {
       narrative = combat.map((c) => c.summary).filter(Boolean).join(' ');
     } else {
-      narrative = livingEnemies.length ? 'Os inimigos recuam e observam, à espreita.' : 'Nenhum inimigo de pé.';
+      narrative = livingEnemies.length ? 'Os inimigos recuam e observam, à espreita.' : 'A tensão diminui por um instante.';
     }
 
     return { narrative, combat, effects };
   }
 
-  openingTurn(session) {
-    const gm = this.runGmTurn(session, { intro: true });
+  async openingTurn(session) {
+    const base = this.runGmTurn(session, { intro: true });
+    try {
+      const intro = await this.gm.generateIntro(session);
+      if (intro.adventure) session.adventure = intro.adventure;
+      if (intro.narrative) base.narrative = intro.narrative;
+      GameFinder.saveGmMemory(
+        session.id,
+        `Abertura: ${session.adventure?.title || ''} — ${intro.narrative}`.slice(0, 4000)
+      ).catch(() => {});
+    } catch (err) {
+      console.error('[opening]', err.message);
+    }
+
+    session.log.push({ at: Date.now(), playerId: null, rawText: '[intro]', narrative: base.narrative });
     session.outcome = this.checkOutcome(session);
     if (!session.outcome) this.advanceTurn(session);
     this.syncEntities(session);
     GameFinder.saveSession(session).catch(() => {});
     return {
-      segment: { by: 'gm', name: 'Mestre', ...gm },
+      segment: { by: 'gm', name: 'Mestre', ...base },
       turn: this.turnPayload(session),
       outcome: session.outcome,
     };
