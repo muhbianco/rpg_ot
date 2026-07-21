@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/main.css?v=4" />
+  <link rel="stylesheet" href="/css/main.css?v=5" />
 </head>
 <body>
   <div id="app">
@@ -111,6 +111,14 @@
             </div>
             <div id="attr-editor" class="attr-editor"></div>
           </div>
+          <div class="skills-block">
+            <div class="attr-head">
+              <strong>Habilidades</strong>
+              <span id="power-remaining" class="muted">1 ponto</span>
+              <button type="button" id="btn-skills" class="btn secondary tiny">Ver / distribuir</button>
+            </div>
+            <p id="skills-summary" class="muted tiny">Nenhuma habilidade desbloqueada ainda.</p>
+          </div>
           <button type="submit" class="btn">SALVAR FICHA</button>
         </form>
         <div id="char-preview" class="char-preview"></div>
@@ -119,6 +127,21 @@
         <p id="hall-error" class="error"></p>
       </div>
     </section>
+
+    <div id="skills-modal" class="modal hidden" aria-hidden="true">
+      <div class="modal-panel">
+        <header class="row">
+          <div>
+            <p class="eyebrow">Tormenta20 · Poderes</p>
+            <h3 id="skills-modal-title">Habilidades</h3>
+          </div>
+          <button type="button" id="btn-skills-close" class="btn ghost tiny">Fechar</button>
+        </header>
+        <p id="skills-modal-points" class="muted">Pontos de poder: 1</p>
+        <div id="race-traits-box" class="traits-box"></div>
+        <div id="skills-modal-list" class="skills-modal-list"></div>
+      </div>
+    </div>
 
     <section id="screen-game" class="screen game hidden" aria-hidden="true">
       <aside class="hud">
@@ -141,6 +164,10 @@
         <p>Defesa: <strong id="hud-def">—</strong></p>
         <p>Arma: <strong id="hud-weapon">—</strong></p>
         <p>Status: <strong id="hud-status">nenhum</strong></p>
+        <div class="skills-hud">
+          <h3>Habilidades</h3>
+          <div id="hud-skills" class="hud-skills"></div>
+        </div>
         <div class="party-mini">
           <h3>Party</h3>
           <ul id="party-hud"></ul>
@@ -159,8 +186,8 @@
     </section>
   </div>
 
-  <script src="/js/socket.io.min.js?v=4"></script>
-  <script src="/js/game/renderer.js?v=4"></script>
-  <script src="/js/app.js?v=4"></script>
+  <script src="/js/socket.io.min.js?v=5"></script>
+  <script src="/js/game/renderer.js?v=5"></script>
+  <script src="/js/app.js?v=5"></script>
 </body>
 </html>

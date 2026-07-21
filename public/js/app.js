@@ -17,6 +17,7 @@
   let readySent = false;
   let currentTurn = null;
   let attrState = null;
+  let skillRanks = {};
 
   const AUTH_MESSAGES = {
     denied: 'Você precisa estar no servidor Discord para jogar.',
@@ -253,6 +254,7 @@
       requestPreview();
     });
     renderAttrEditor();
+    syncPowerLabel();
   }
 
   function spentPoints(attrs) {
@@ -277,10 +279,201 @@
     });
   }
 
+  function powerBudget() {
+    if (!catalog || !catalog.skills) return 1;
+    const raceKey = ($('#char-race') && $('#char-race').value) || 'humano';
+    let pts = catalog.skills.startingPowerPoints || 1;
+    const race = (catalog.races || []).find((r) => r.key === raceKey);
+    if (race && race.traits) {
+      // Humano Versátil: +1 — espelha o servidor
+      if (raceKey === 'humano') pts += 1;
+    }
+    return pts;
+  }
+
+  function skillSpendCost(key, toRank) {
+    const def = catalog.skills.skills[key];
+    if (!def || toRank <= 0) return 0;
+    return def.unlockCost + Math.max(0, toRank - 1) * def.rankCost;
+  }
+
+  function totalSkillSpent() {
+    let spent = 0;
+    Object.keys(skillRanks).forEach((k) => {
+      spent += skillSpendCost(k, skillRanks[k] || 0);
+    });
+    return spent;
+  }
+
+  function syncPowerLabel() {
+    const rem = powerBudget() - totalSkillSpent();
+    const el = $('#power-remaining');
+    if (el) el.textContent = rem + ' ponto' + (rem === 1 ? '' : 's') + ' de poder';
+    const summary = $('#skills-summary');
+    if (summary) {
+      const unlocked = Object.entries(skillRanks).filter(([, r]) => r > 0);
+      if (!unlocked.length) {
+        summary.textContent = 'Nenhuma habilidade desbloqueada ainda.';
+      } else {
+        summary.textContent = unlocked.map(([k, r]) => {
+          const def = catalog.skills.skills[k];
+          return (def ? def.label : k) + ' r' + r;
+        }).join(' · ');
+      }
+    }
+  }
+
+  function resetSkillRanksForClass() {
+    skillRanks = {};
+    syncPowerLabel();
+  }
+
+  function openSkillsModal() {
+    if (!catalog || !catalog.skills) return;
+    const modal = $('#skills-modal');
+    if (!modal) return;
+    const classKey = ($('#char-class') && $('#char-class').value) || 'guerreiro';
+    const raceKey = ($('#char-race') && $('#char-race').value) || 'humano';
+    const title = $('#skills-modal-title');
+    if (title) title.textContent = 'Habilidades · ' + classKey;
+    const pts = $('#skills-modal-points');
+    if (pts) {
+      pts.textContent = 'Pontos de poder: ' + totalSkillSpent() + ' / ' + powerBudget() +
+        ' (restam ' + (powerBudget() - totalSkillSpent()) + ')';
+    }
+
+    const traitsBox = $('#race-traits-box');
+    if (traitsBox) {
+      const race = (catalog.races || []).find((r) => r.key === raceKey);
+      traitsBox.replaceChildren();
+      const h = document.createElement('h4');
+      h.textContent = 'Buffs de raça — ' + ((race && race.label) || raceKey);
+      traitsBox.appendChild(h);
+      const ul = document.createElement('ul');
+      ((race && race.traits) || []).forEach((t) => {
+        const li = document.createElement('li');
+        li.innerHTML = '<strong></strong> — <span></span>';
+        li.querySelector('strong').textContent = t.label;
+        li.querySelector('span').textContent = t.description;
+        ul.appendChild(li);
+      });
+      traitsBox.appendChild(ul);
+    }
+
+    const list = $('#skills-modal-list');
+    if (!list) return;
+    list.replaceChildren();
+    const kitKeys = (catalog.skills.kits && catalog.skills.kits[classKey]) || [];
+    kitKeys.forEach((key) => {
+      const def = catalog.skills.skills[key];
+      if (!def) return;
+      const rank = skillRanks[key] || 0;
+      const card = document.createElement('div');
+      card.className = 'skill-card';
+      card.dataset.skill = key;
+      const scaleLabel = (catalog.attrLabels && catalog.attrLabels[def.scaleAttr]) || def.scaleAttr;
+      card.innerHTML =
+        '<h4></h4><div class="meta"></div><p class="muted"></p>' +
+        '<div class="skill-rank-row">' +
+        '<button type="button" class="attr-btn" data-skill-dir="-1">−</button>' +
+        '<span class="attr-val skill-rank-val"></span>' +
+        '<button type="button" class="attr-btn" data-skill-dir="1">+</button>' +
+        '<span class="muted tiny">rank</span></div>';
+      card.querySelector('h4').textContent = def.label;
+      card.querySelector('.meta').textContent =
+        'Escala com ' + scaleLabel + ' · CD ' + def.cooldown + ' turno(s)' +
+        (def.mpCost ? ' · ' + def.mpCost + ' PM' : '');
+      card.querySelector('p').textContent = def.description;
+      card.querySelector('.skill-rank-val').textContent = String(rank);
+      list.appendChild(card);
+    });
+    modal.classList.remove('hidden');
+    modal.setAttribute('aria-hidden', 'false');
+  }
+
+  function closeSkillsModal() {
+    const modal = $('#skills-modal');
+    if (!modal) return;
+    modal.classList.add('hidden');
+    modal.setAttribute('aria-hidden', 'true');
+    syncPowerLabel();
+    requestPreview();
+  }
+
+  function adjustSkillRank(key, dir) {
+    const def = catalog.skills.skills[key];
+    if (!def) return;
+    const cur = skillRanks[key] || 0;
+    const next = cur + dir;
+    if (next < 0 || next > def.maxRank) return;
+    const trial = Object.assign({}, skillRanks);
+    if (next === 0) delete trial[key];
+    else trial[key] = next;
+    let spent = 0;
+    Object.keys(trial).forEach((k) => { spent += skillSpendCost(k, trial[k]); });
+    if (spent > powerBudget()) return;
+    skillRanks = trial;
+    const card = document.querySelector('.skill-card[data-skill="' + key + '"] .skill-rank-val');
+    if (card) card.textContent = String(next);
+    const pts = $('#skills-modal-points');
+    if (pts) {
+      pts.textContent = 'Pontos de poder: ' + spent + ' / ' + powerBudget() +
+        ' (restam ' + (powerBudget() - spent) + ')';
+    }
+    syncPowerLabel();
+  }
+
+  function renderHudSkills(skillsList) {
+    const box = $('#hud-skills');
+    if (!box) return;
+    box.replaceChildren();
+    if (!skillsList || !skillsList.length) {
+      const p = document.createElement('p');
+      p.className = 'muted tiny';
+      p.textContent = 'Nenhuma habilidade.';
+      box.appendChild(p);
+      return;
+    }
+    skillsList.forEach((s) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'skill-chip';
+      btn.setAttribute('data-nav', 'use-skill');
+      btn.setAttribute('data-skill-key', s.key);
+      btn.disabled = !s.ready || (currentTurn && me && currentTurn.current !== me.id);
+      btn.innerHTML = '<strong></strong><div class="cd"></div>';
+      btn.querySelector('strong').textContent = s.label + ' r' + s.rank;
+      btn.querySelector('.cd').textContent = s.ready
+        ? (s.scaleAttrLabel + (s.mpCost ? ' · ' + s.mpCost + ' PM' : ''))
+        : ('Recarga: ' + s.cooldownLeft + ' turno(s)');
+      box.appendChild(btn);
+    });
+  }
+
+  function useSkill(skillKey) {
+    if (!currentTurn || !me || currentTurn.current !== me.id) {
+      const err = $('#action-error');
+      if (err) err.textContent = 'Não é o seu turno.';
+      return;
+    }
+    setActionEnabled(false, 'Usando habilidade...');
+    requireSocket().emit('action:skill', { skillKey: skillKey }, (res) => {
+      if (!res || !res.ok) {
+        const err = $('#action-error');
+        if (err) err.textContent = (res && res.error) || 'Falha';
+        if (currentTurn) applyTurn(currentTurn);
+        return;
+      }
+      if (res.result && res.result.hud) renderHud(res.result.hud);
+      if (res.result && res.result.turn) applyTurn(res.result.turn);
+    });
+  }
+
   function applyClassPreset() {
     if (!catalog || !catalog.pointBuy) return;
     const classKey = ($('#char-class') && $('#char-class').value) || 'guerreiro';
     attrState = Object.assign({}, catalog.pointBuy.presets[classKey] || catalog.pointBuy.presets.guerreiro);
+    resetSkillRanksForClass();
     renderAttrEditor();
     requestPreview();
   }
@@ -295,6 +488,7 @@
         race: $('#char-race') && $('#char-race').value,
         classKey: $('#char-class') && $('#char-class').value,
         attrs: attrState,
+        skillRanks: skillRanks,
       }, (res) => {
         if (!res || !res.ok || !res.hud) return;
         const c = res.hud;
@@ -305,6 +499,10 @@
             ' | HP ' + c.hp + '/' + c.hpMax +
             ' | Mana ' + c.mp + '/' + c.mpMax +
             ' | Def ' + c.defense + ' | ' + c.weapon;
+        }
+        if (res.power) {
+          const el = $('#power-remaining');
+          if (el) el.textContent = res.power.remaining + ' ponto(s) de poder';
         }
       });
     }, 200);
@@ -364,6 +562,7 @@
     set('#hud-def', String(hud.defense));
     set('#hud-weapon', hud.weapon || '—');
     set('#hud-status', (hud.status && hud.status.length) ? hud.status.join(', ') : 'nenhum');
+    renderHudSkills(hud.skills || []);
     const barHp = $('#bar-hp');
     const barMp = $('#bar-mp');
     if (barHp) barHp.style.width = (hud.hpMax ? (hud.hp / hud.hpMax) * 100 : 0) + '%';
@@ -403,6 +602,15 @@
     if (ul) {
       ul.querySelectorAll('li').forEach((li) => {
         li.classList.toggle('turn-active', li.dataset.playerId === (turn && turn.current));
+      });
+    }
+    // Re-render chips com disabled atualizado
+    const skillsBox = $('#hud-skills');
+    if (skillsBox && skillsBox.querySelectorAll('.skill-chip').length) {
+      skillsBox.querySelectorAll('.skill-chip').forEach((btn) => {
+        const cdText = btn.querySelector('.cd');
+        const onCd = cdText && /Recarga/.test(cdText.textContent || '');
+        btn.disabled = !myTurn || onCd;
       });
     }
   }
@@ -632,9 +840,18 @@
     appRoot.addEventListener('click', (e) => {
       const t = e.target.closest(
         '#btn-goto-games, #btn-games-back, #btn-recap-close, #btn-hall-back, #btn-game-lobby, ' +
-        '#btn-create-party, #btn-leave-party, #btn-hall, #btn-ready, #btn-attr-reset, [data-nav]'
+        '#btn-create-party, #btn-leave-party, #btn-hall, #btn-ready, #btn-attr-reset, ' +
+        '#btn-skills, #btn-skills-close, [data-nav], [data-skill-dir]'
       );
       if (!t) return;
+
+      const skillDir = t.getAttribute('data-skill-dir');
+      if (skillDir) {
+        e.preventDefault();
+        const card = t.closest('.skill-card');
+        if (card) adjustSkillRank(card.dataset.skill, Number(skillDir));
+        return;
+      }
 
       const nav = t.getAttribute('data-nav');
       if (nav === 'rejoin') {
@@ -645,6 +862,22 @@
       if (nav === 'recap') {
         e.preventDefault();
         loadRecap(t.getAttribute('data-party-id'));
+        return;
+      }
+      if (nav === 'use-skill') {
+        e.preventDefault();
+        useSkill(t.getAttribute('data-skill-key'));
+        return;
+      }
+
+      if (t.id === 'btn-skills') {
+        e.preventDefault();
+        openSkillsModal();
+        return;
+      }
+      if (t.id === 'btn-skills-close') {
+        e.preventDefault();
+        closeSkillsModal();
         return;
       }
 
@@ -759,9 +992,22 @@
   }
 
   const charClass = $('#char-class');
-  if (charClass) charClass.addEventListener('change', applyClassPreset);
+  if (charClass) {
+    charClass.addEventListener('change', () => {
+      applyClassPreset();
+      syncPowerLabel();
+    });
+  }
   const charRace = $('#char-race');
-  if (charRace) charRace.addEventListener('change', requestPreview);
+  if (charRace) {
+    charRace.addEventListener('change', () => {
+      // Ao trocar raça, revalida pontos (humano tem +1)
+      const spent = totalSkillSpent();
+      if (spent > powerBudget()) resetSkillRanksForClass();
+      syncPowerLabel();
+      requestPreview();
+    });
+  }
   const charName = $('#char-name');
   if (charName) charName.addEventListener('input', requestPreview);
 
@@ -777,6 +1023,7 @@
         race: $('#char-race') && $('#char-race').value,
         classKey: $('#char-class') && $('#char-class').value,
         attrs: attrState,
+        skillRanks: skillRanks,
       }, (res) => {
         if (!res || !res.ok) {
           if (err) err.textContent = (res && res.error) || 'Falha';

@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS characters (
   status_json JSON NOT NULL,
   inventory_json JSON NOT NULL,
   mercy_stats_json JSON NOT NULL,
+  skills_json JSON NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uq_characters_party_player (party_id, player_id),
   INDEX idx_characters_player (player_id)
@@ -108,6 +109,9 @@ ALTER TABLE parties
   ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   ADD COLUMN IF NOT EXISTS ended_at TIMESTAMP NULL;
 ALTER TABLE parties ADD INDEX IF NOT EXISTS idx_parties_host (host_id);
+
+ALTER TABLE characters
+  ADD COLUMN IF NOT EXISTS skills_json JSON NULL;
 
 -- world_state_json passa a guardar o snapshot COMPLETO da sessão
 -- (personagens, inimigos, turno, mundo) para permitir reidratação/reentrada.

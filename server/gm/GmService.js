@@ -9,8 +9,10 @@ Regras obrigatórias:
 - Responda APENAS JSON válido no schema pedido.
 - partySize afeta a tensão: party grande = mundo mais hostil.
 - Se mercyScore do ator for alto, dê "colher de chá": pistas, inimigos hesitam, saídas narrativas — sem quebrar o desafio por completo.
-- intents devem refletir a ação do jogador (attack/move/cast/inspect/talk/use_item/wait).
+- intents devem refletir a ação do jogador (attack/move/cast/skill/inspect/talk/use_item/wait).
 - Para magias use spellKey: missil_magico | bola_de_fogo | cura_ferimentos | luz quando couber.
+- Para habilidades de classe use type "skill" e skillKey (ex: ataque_especial, ataque_furtivo, canalizar_energia, missil_magico).
+- Só use skill se o ator tiver a habilidade listada em skills.
 - targetId pode ser nome do inimigo, id, "self", ou null.`;
 
 class GmService {
@@ -40,6 +42,9 @@ class GmService {
         mp: `${actor.mp}/${actor.mpMax}`,
         status: actor.status,
         spells: actor.spells,
+        skills: Object.entries(actor.skillRanks || {})
+          .filter(([, r]) => r > 0)
+          .map(([k, r]) => ({ key: k, rank: r })),
         position: { x: actor.x, y: actor.y },
         mercyScore: mercy.score,
       },
@@ -70,7 +75,7 @@ ${JSON.stringify(context, null, 2)}
 Schema JSON:
 {
   "narrative": "string",
-  "intents": [{"type":"attack|move|inspect|talk|cast|use_item|wait","targetId":"string|null","spellKey":"string|null","dx":0,"dy":0,"skillHint":"string|null"}],
+  "intents": [{"type":"attack|move|inspect|talk|cast|skill|use_item|wait","targetId":"string|null","spellKey":"string|null","skillKey":"string|null","dx":0,"dy":0,"skillHint":"string|null"}],
   "sceneHints": {"mood":"string","focusEntityId":"string|null"},
   "mercyNotes": "string|null"
 }`;

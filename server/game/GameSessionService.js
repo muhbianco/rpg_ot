@@ -5,6 +5,7 @@ const RulesEngine = require('../rules/RulesEngine');
 const { hudPayload } = require('../character/CharacterService');
 const GameFinder = require('../db/GameFinder');
 const GmService = require('../gm/GmService');
+const { SKILLS, tickCooldowns } = require('../rules/skills');
 
 const MAP_W = 12;
 const MAP_H = 10;
@@ -275,6 +276,13 @@ class GameSessionService {
   advanceTurn(session) {
     const t = session.turn;
     if (!t) return null;
+
+    // Ao sair do turno de um player: reduz CDs
+    if (t.current && t.current !== 'gm') {
+      const leaving = session.characters[t.current];
+      tickCooldowns(leaving);
+    }
+
     const order = t.order || [];
     for (let step = 0; step <= order.length; step += 1) {
       t.index += 1;
@@ -288,6 +296,13 @@ class GameSessionService {
         return 'gm';
       }
       if (!this.isIncapacitated(session.characters[id])) {
+        // Início do turno do player: buffs "até próximo turno" caem
+        const char = session.characters[id];
+        if (char) {
+          char.tempDefenseBonus = 0;
+          char.tempAttackBonus = 0;
+          char.defense = char.baseDefense || char.defense;
+        }
         t.current = id;
         return id;
       }
@@ -395,6 +410,97 @@ class GameSessionService {
     const prog = this.progressAfterActor(session);
     this.syncEntities(session);
     GameFinder.saveSession(session).catch(() => {});
+    return {
+      segments: [playerSeg, ...prog.segments],
+      turn: this.turnPayload(session),
+      outcome: prog.outcome,
+      hud: hudPayload(session.characters[playerId]),
+    };
+  }
+
+  async submitPlayerSkill(session, playerId, skillKey, targetHint) {
+    const actor = session.characters[playerId];
+    if (!actor) throw new Error('Personagem não encontrado.');
+    if (this.isIncapacitated(actor)) throw new Error('Personagem incapacitado.');
+
+    const rank = actor.skillRanks?.[skillKey] || 0;
+    if (rank <= 0) throw new Error('Você não possui esta habilidade.');
+    const skillDef = SKILLS[skillKey];
+    if (!skillDef) throw new Error('Habilidade desconhecida.');
+
+    let target = null;
+    if (skillDef.type === 'heal') {
+      target = this.findTarget(session, targetHint || 'self', playerId) || actor;
+    } else if (skillDef.type !== 'buff_self') {
+      target = this.findTarget(session, targetHint || null, playerId);
+      if (!target || target.kind === 'player') throw new Error('Escolha um inimigo válido.');
+    }
+
+    const res = this.rules.resolveSkill(actor, target, skillKey, skillDef, rank);
+    if (!res.ok) throw new Error(res.reason || 'Falha ao usar habilidade.');
+
+    // Recalcula defesa com buff
+    actor.defense = (actor.baseDefense || actor.defense) + (actor.tempDefenseBonus || 0);
+
+    const combat = [];
+    const effects = [];
+    let summary = res.summary || `${actor.name} usa ${skillDef.label}.`;
+
+    if (res.healed) {
+      summary = `${actor.name} usa ${skillDef.label} e cura ${res.healed} PV de ${(target || actor).name}.`;
+      effects.push({
+        type: 'cast',
+        casterId: actor.id,
+        targetId: (target || actor).id,
+        spell: skillDef.label,
+        healed: res.healed,
+        damage: 0,
+      });
+    } else if (res.damage) {
+      const downed = target && target.hp <= 0;
+      summary = res.hit
+        ? `${actor.name} usa ${skillDef.label} em ${target.name} (${res.damage} de dano).${downed ? ` ${target.name} cai!` : ''}`
+        : `${actor.name} usa ${skillDef.label}, mas erra.`;
+      effects.push({
+        type: skillDef.type === 'auto_damage' || skillDef.type === 'damage_save' ? 'cast' : 'attack',
+        attackerId: actor.id,
+        casterId: actor.id,
+        targetId: target.id,
+        outcome: res.outcome,
+        damage: res.damage || 0,
+        spell: skillDef.label,
+      });
+      if (downed) effects.push({ type: 'death', id: target.id });
+    } else if (skillDef.type === 'buff_self') {
+      effects.push({ type: 'cast', casterId: actor.id, targetId: actor.id, spell: skillDef.label, healed: 0, damage: 0 });
+    }
+
+    combat.push({
+      summary,
+      outcome: res.outcome || 'ok',
+      damage: res.damage || 0,
+      healed: res.healed || 0,
+    });
+
+    this.syncEntities(session);
+    const narrative = summary;
+    session.log.push({ at: Date.now(), playerId, rawText: `[skill:${skillKey}]`, narrative });
+    if (session.log.length > 40) session.log.shift();
+    GameFinder.logAction(session.id, playerId, `[skill:${skillKey}]`, { narrative, combat }).catch(() => {});
+
+    const playerSeg = {
+      by: 'player',
+      playerId,
+      name: actor.name,
+      narrative,
+      effects,
+      combat,
+    };
+
+    const prog = this.progressAfterActor(session);
+    this.syncEntities(session);
+    GameFinder.saveSession(session).catch(() => {});
+
     return {
       segments: [playerSeg, ...prog.segments],
       turn: this.turnPayload(session),
@@ -543,6 +649,52 @@ class GameSessionService {
             ? `${actor.name} conjura ${res.spell} em ${target.name} (${res.damage} de dano).${downed ? ` ${target.name} cai!` : ''}`
             : `${actor.name} conjura ${res.spell}.`,
         outcome: 'ok',
+        damage: res.damage || 0,
+        healed: res.healed || 0,
+        effects,
+      };
+    }
+
+    if (type === 'skill') {
+      const skillKey = intent.skillKey || intent.skillHint;
+      const rank = actor.skillRanks?.[skillKey] || 0;
+      const skillDef = SKILLS[skillKey];
+      if (!skillDef || rank <= 0) {
+        return { summary: `${actor.name} tenta uma habilidade que não conhece.`, outcome: 'fail' };
+      }
+      let target = null;
+      if (skillDef.type === 'heal') {
+        target = this.findTarget(session, intent.targetId || intent.target || 'self', playerId) || actor;
+      } else if (skillDef.type !== 'buff_self') {
+        target = this.findTarget(session, intent.targetId || intent.target, playerId);
+      }
+      const res = this.rules.resolveSkill(actor, target, skillKey, skillDef, rank);
+      if (!res.ok) return { summary: res.reason || 'Falha na habilidade.', outcome: 'fail' };
+      actor.defense = (actor.baseDefense || actor.defense) + (actor.tempDefenseBonus || 0);
+      const downed = target && target.kind === 'enemy' && target.hp <= 0;
+      const effects = [];
+      if (res.damage || res.healed) {
+        effects.push({
+          type: res.healed ? 'cast' : 'attack',
+          attackerId: actor.id,
+          casterId: actor.id,
+          targetId: (target || actor).id,
+          outcome: res.outcome,
+          damage: res.damage || 0,
+          healed: res.healed || 0,
+          spell: skillDef.label,
+        });
+      } else {
+        effects.push({ type: 'cast', casterId: actor.id, targetId: actor.id, spell: skillDef.label, damage: 0, healed: 0 });
+      }
+      if (downed) effects.push({ type: 'death', id: target.id });
+      return {
+        summary: res.healed
+          ? `${actor.name} usa ${skillDef.label} e cura ${res.healed} PV.`
+          : res.damage
+            ? `${actor.name} usa ${skillDef.label} (${res.damage} de dano).${downed ? ` ${target.name} cai!` : ''}`
+            : `${actor.name} usa ${skillDef.label}.`,
+        outcome: res.outcome || 'ok',
         damage: res.damage || 0,
         healed: res.healed || 0,
         effects,

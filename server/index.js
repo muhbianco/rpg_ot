@@ -549,6 +549,7 @@ async function bootstrap() {
           raceKey,
           classKey,
           attrs: data?.attrs || null,
+          skillRanks: data?.skillRanks || {},
         });
         const snap = parties.setCharacter(player.id, character);
         reply({ ok: true, character: hudPayload(character), party: snap });
@@ -571,6 +572,7 @@ async function bootstrap() {
         raceKey: String(data?.race || 'humano'),
         classKey: String(data?.classKey || 'guerreiro'),
         attrs: data?.attrs || null,
+        skillRanks: data?.skillRanks || {},
       });
       reply(out);
     });
@@ -639,6 +641,42 @@ async function bootstrap() {
       } catch (err) {
         console.error('[action]', err);
         reply({ ok: false, error: err.message || 'Falha ao resolver ação.' });
+      } finally {
+        session._busy = false;
+      }
+    });
+
+    socket.on('action:skill', async (data, cb) => {
+      const reply = typeof cb === 'function' ? cb : () => {};
+      const player = sockets.get(socket.id);
+      if (!player) return reply({ ok: false, error: 'Não autenticado.' });
+      const skillKey = String(data?.skillKey || '').trim();
+      if (!skillKey) return reply({ ok: false, error: 'Habilidade inválida.' });
+      if (!rateLimit.hit(`act:${player.id}`, config.limits.actionsPerMinute, 60000)) {
+        return reply({ ok: false, error: 'Calma — muitas ações.' });
+      }
+
+      const party = parties.getByPlayer(player.id);
+      if (!party?.sessionId) return reply({ ok: false, error: 'Sessão inativa.' });
+      if (party.status === 'ended') return reply({ ok: false, error: 'Esta partida já terminou.' });
+      const session = games.get(party.sessionId);
+      if (!session) return reply({ ok: false, error: 'Sessão não encontrada.' });
+      if (!games.isPlayersTurn(session, player.id)) {
+        return reply({ ok: false, error: 'Não é o seu turno.' });
+      }
+      if (session._busy) return reply({ ok: false, error: 'Ação em andamento, aguarde.' });
+      session._busy = true;
+
+      try {
+        const result = await games.submitPlayerSkill(session, player.id, skillKey, data?.target || null);
+        for (const seg of result.segments) emitSegment(party.id, seg);
+        emitSessionToParty(session);
+        emitTurn(session);
+        if (result.outcome) endGame(party, session, result.outcome);
+        reply({ ok: true, result: { hud: result.hud, turn: result.turn, outcome: result.outcome } });
+      } catch (err) {
+        console.error('[skill]', err);
+        reply({ ok: false, error: err.message || 'Falha ao usar habilidade.' });
       } finally {
         session._busy = false;
       }

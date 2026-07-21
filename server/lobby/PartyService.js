@@ -28,6 +28,7 @@ function hydrateCharacterFromRow(row) {
   const race = RACES[raceKey] || RACES.humano;
   const klass = CLASSES[classKey] || CLASSES.guerreiro;
   const weapon = WEAPONS[row.weapon_key] || WEAPONS.clava;
+  const meta = row.skillsMeta || {};
   return {
     id: row.id,
     playerId: row.player_id,
@@ -44,9 +45,20 @@ function hydrateCharacterFromRow(row) {
     mp: row.mp,
     mpMax: row.mp_max,
     defense: row.defense,
+    baseDefense: meta.baseDefense || row.defense,
     weaponKey: row.weapon_key,
     weaponLabel: weapon.label,
     spells: [...(klass.spells || [])],
+    skillRanks: meta.skillRanks || {},
+    knownSkills: meta.knownSkills || [],
+    powerPointsSpent: meta.powerPointsSpent || 0,
+    powerPointsBudget: meta.powerPointsBudget || 1,
+    powerPointsRemaining: meta.powerPointsRemaining || 0,
+    skillCooldowns: meta.skillCooldowns || {},
+    tempDefenseBonus: 0,
+    tempAttackBonus: 0,
+    raceTraits: meta.raceTraits || [],
+    raceTraitsCombat: meta.raceTraitsCombat || {},
     status: row.status || [],
     inventory: row.inventory || [],
     mercy: row.mercy || { deaths: 0, failStreak: 0, punishments: 0 },

@@ -159,6 +159,98 @@ html, body {
   color: var(--accent2);
   font-weight: 700;
 }
+.skills-block {
+  grid-column: 1 / -1;
+  margin: 0.35rem 0 0.5rem;
+}
+.skills-hud h3, .traits-box h4 {
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  margin: 1rem 0 0.4rem;
+  color: var(--accent2);
+}
+.hud-skills {
+  display: grid;
+  gap: 0.35rem;
+}
+.skill-chip {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: #140f0b;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  padding: 0.45rem 0.55rem;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82rem;
+}
+.skill-chip:hover:not(:disabled) { border-color: var(--accent2); }
+.skill-chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.skill-chip .cd { color: var(--muted); font-size: 0.75rem; }
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 6, 4, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+  padding: 1rem;
+}
+.modal.hidden { display: none !important; }
+.modal-panel {
+  width: min(640px, 100%);
+  max-height: 86vh;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 1.25rem;
+  box-shadow: 0 24px 60px rgba(0,0,0,0.55);
+}
+.skills-modal-list {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+.skill-card {
+  border: 1px solid var(--line);
+  padding: 0.75rem;
+}
+.skill-card h4 {
+  margin: 0 0 0.35rem;
+  font-family: var(--font-display);
+  font-size: 1rem;
+}
+.skill-card .meta {
+  color: var(--accent2);
+  font-size: 0.85rem;
+  margin-bottom: 0.35rem;
+}
+.skill-rank-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.55rem;
+}
+.traits-box {
+  border: 1px dashed var(--line);
+  padding: 0.65rem 0.75rem;
+  margin: 0.75rem 0;
+}
+.traits-box ul {
+  list-style: none;
+  padding: 0;
+  margin: 0.4rem 0 0;
+}
+.traits-box li {
+  padding: 0.3rem 0;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  font-size: 0.9rem;
+}
 .user-chip {
   display: flex;
   align-items: center;

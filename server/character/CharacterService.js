@@ -1,6 +1,7 @@
 const { v4: uuidv4 } = require('uuid');
 const { RACES, CLASSES, WEAPONS, ATTRS, ATTR_LABELS, attrMod } = require('../rules/catalog');
 const pointBuy = require('../rules/pointBuy');
+const skills = require('../rules/skills');
 
 function applyRaceBonus(attrs, race) {
   const out = { ...attrs };
@@ -10,21 +11,33 @@ function applyRaceBonus(attrs, race) {
   return out;
 }
 
-function buildCharacter({ playerId, partyId, name, raceKey, classKey, attrs: rawAttrs }) {
+function buildCharacter({ playerId, partyId, name, raceKey, classKey, attrs: rawAttrs, skillRanks: rawRanks }) {
   const race = RACES[raceKey] || RACES.humano;
   const klass = CLASSES[classKey] || CLASSES.guerreiro;
 
-  // Distribuição pré-racial: usa a enviada pelo cliente (validada) ou o preset da classe.
   const chosen = rawAttrs ? pointBuy.validate(rawAttrs) : { ok: true, attrs: pointBuy.presetFor(classKey) };
   if (!chosen.ok) throw new Error(chosen.error || 'Atributos inválidos.');
   const attrs = applyRaceBonus(chosen.attrs, race);
 
   const level = 1;
+  const ranksValidation = skills.validateSkillRanks({
+    classKey,
+    raceKey,
+    level,
+    ranks: rawRanks || {},
+  });
+  if (!ranksValidation.ok) throw new Error(ranksValidation.error);
+
+  const raceCombat = skills.applyRaceCombatBonuses({}, raceKey);
   const hpMax = klass.hitDie + attrMod(attrs.CON);
   const mpMax = klass.mpBase + klass.mpPerLevel * level + Math.max(0, attrMod(attrs.INT) + attrMod(attrs.SAB));
-  const defense = 10 + attrMod(attrs.DES) + klass.defenseBonus;
+  const baseDefense = 10 + attrMod(attrs.DES) + klass.defenseBonus + (raceCombat.defenseBonus || 0);
   const weaponKey = klass.weapon;
   const weapon = WEAPONS[weaponKey];
+
+  const powerBudget = skills.powerPointsForLevel(level, raceKey);
+  const skillRanks = ranksValidation.ranks;
+  const knownSkills = Object.keys(skillRanks).filter((k) => skillRanks[k] > 0);
 
   return {
     id: uuidv4(),
@@ -41,10 +54,25 @@ function buildCharacter({ playerId, partyId, name, raceKey, classKey, attrs: raw
     hpMax,
     mp: mpMax,
     mpMax,
-    defense,
+    baseDefense,
+    defense: baseDefense,
     weaponKey,
     weaponLabel: weapon.label,
     spells: [...(klass.spells || [])],
+    skillRanks,
+    knownSkills,
+    powerPointsSpent: ranksValidation.spent,
+    powerPointsBudget: powerBudget,
+    powerPointsRemaining: ranksValidation.remaining,
+    skillCooldowns: {},
+    tempDefenseBonus: 0,
+    tempAttackBonus: 0,
+    raceTraits: skills.raceTraitsFor(raceKey).map((t) => ({
+      key: t.key,
+      label: t.label,
+      description: t.description,
+    })),
+    raceTraitsCombat: raceCombat,
     status: [],
     inventory: [{ key: weaponKey, label: weapon.label, qty: 1 }],
     mercy: { deaths: 0, failStreak: 0, punishments: 0 },
@@ -63,9 +91,44 @@ function classColor(classKey) {
   }[classKey] || '#aaaaaa';
 }
 
+function skillsPayload(char) {
+  if (!char) return [];
+  const ranks = char.skillRanks || {};
+  return Object.entries(ranks)
+    .filter(([, r]) => r > 0)
+    .map(([key, rank]) => {
+      const def = skills.SKILLS[key];
+      if (!def) return null;
+      const cd = (char.skillCooldowns && char.skillCooldowns[key]) || 0;
+      return {
+        key,
+        label: def.label,
+        rank,
+        scaleAttr: def.scaleAttr,
+        scaleAttrLabel: ATTR_LABELS[def.scaleAttr] || def.scaleAttr,
+        description: def.description,
+        cooldown: def.cooldown,
+        cooldownLeft: cd,
+        mpCost: def.mpCost,
+        ready: cd <= 0,
+        type: def.type,
+      };
+    })
+    .filter(Boolean);
+}
+
 function publicCatalog() {
   return {
-    races: Object.entries(RACES).map(([key, v]) => ({ key, label: v.label, bonus: v.bonus || {} })),
+    races: Object.entries(RACES).map(([key, v]) => ({
+      key,
+      label: v.label,
+      bonus: v.bonus || {},
+      traits: skills.raceTraitsFor(key).map((t) => ({
+        key: t.key,
+        label: t.label,
+        description: t.description,
+      })),
+    })),
     classes: Object.entries(CLASSES).map(([key, v]) => ({
       key,
       label: v.label,
@@ -73,31 +136,45 @@ function publicCatalog() {
       spells: v.spells,
       keyAttr: pointBuy.KEY_ATTR[key] || null,
       preset: pointBuy.presetFor(key),
+      kit: skills.classKit(key).map((s) => skills.publicSkill(s)),
     })),
     attrs: ATTRS,
     attrLabels: ATTR_LABELS,
     pointBuy: pointBuy.publicConfig(),
+    skills: skills.publicCatalogSkills(),
   };
 }
 
-function previewCharacter({ name, raceKey, classKey, attrs: rawAttrs }) {
-  const validation = rawAttrs ? pointBuy.validate(rawAttrs) : { ok: true, attrs: pointBuy.presetFor(classKey), spent: null, remaining: null };
+function previewCharacter({ name, raceKey, classKey, attrs: rawAttrs, skillRanks }) {
+  const validation = rawAttrs
+    ? pointBuy.validate(rawAttrs)
+    : { ok: true, attrs: pointBuy.presetFor(classKey), spent: null, remaining: null };
   if (!validation.ok) return { ok: false, error: validation.error };
-  const character = buildCharacter({
-    playerId: 'preview',
-    partyId: 'preview',
-    name: name || 'Herói',
-    raceKey,
-    classKey,
-    attrs: validation.attrs,
-  });
-  return {
-    ok: true,
-    hud: hudPayload(character),
-    spent: validation.spent,
-    remaining: validation.remaining,
-    finalAttrs: character.attrs,
-  };
+  try {
+    const character = buildCharacter({
+      playerId: 'preview',
+      partyId: 'preview',
+      name: name || 'Herói',
+      raceKey,
+      classKey,
+      attrs: validation.attrs,
+      skillRanks: skillRanks || {},
+    });
+    return {
+      ok: true,
+      hud: hudPayload(character),
+      spent: validation.spent,
+      remaining: validation.remaining,
+      finalAttrs: character.attrs,
+      power: {
+        budget: character.powerPointsBudget,
+        spent: character.powerPointsSpent,
+        remaining: character.powerPointsRemaining,
+      },
+    };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
 }
 
 function hudPayload(char) {
@@ -117,6 +194,10 @@ function hudPayload(char) {
     weapon: char.weaponLabel,
     spells: char.spells || [],
     attrs: char.attrs,
+    skills: skillsPayload(char),
+    raceTraits: char.raceTraits || [],
+    powerPointsRemaining: char.powerPointsRemaining,
+    powerPointsBudget: char.powerPointsBudget,
   };
 }
 
@@ -145,6 +226,7 @@ module.exports = {
   publicCatalog,
   hudPayload,
   partyMemberPublic,
+  skillsPayload,
   RACES,
   CLASSES,
   WEAPONS,

@@ -79,18 +79,30 @@ async function saveCharacter(char) {
     `INSERT INTO characters (
       id, player_id, party_id, name, race, class_key, level,
       attrs_json, hp, hp_max, mp, mp_max, defense, weapon_key,
-      status_json, inventory_json, mercy_stats_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      status_json, inventory_json, mercy_stats_json, skills_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON DUPLICATE KEY UPDATE
       name = VALUES(name), race = VALUES(race), class_key = VALUES(class_key),
       attrs_json = VALUES(attrs_json), hp = VALUES(hp), hp_max = VALUES(hp_max),
       mp = VALUES(mp), mp_max = VALUES(mp_max), defense = VALUES(defense),
       weapon_key = VALUES(weapon_key), status_json = VALUES(status_json),
-      inventory_json = VALUES(inventory_json), mercy_stats_json = VALUES(mercy_stats_json)`,
+      inventory_json = VALUES(inventory_json), mercy_stats_json = VALUES(mercy_stats_json),
+      skills_json = VALUES(skills_json)`,
     [
       char.id, char.playerId, char.partyId, char.name, char.race, char.classKey, char.level,
       JSON.stringify(char.attrs), char.hp, char.hpMax, char.mp, char.mpMax, char.defense, char.weaponKey,
       JSON.stringify(char.status), JSON.stringify(char.inventory), JSON.stringify(char.mercy),
+      JSON.stringify({
+        skillRanks: char.skillRanks || {},
+        knownSkills: char.knownSkills || [],
+        powerPointsSpent: char.powerPointsSpent || 0,
+        powerPointsBudget: char.powerPointsBudget || 1,
+        powerPointsRemaining: char.powerPointsRemaining || 0,
+        skillCooldowns: char.skillCooldowns || {},
+        baseDefense: char.baseDefense || char.defense,
+        raceTraits: char.raceTraits || [],
+        raceTraitsCombat: char.raceTraitsCombat || {},
+      }),
     ]
   );
 }
@@ -178,6 +190,7 @@ async function loadCharactersByParty(partyId) {
     status: parseJson(r.status_json, []),
     inventory: parseJson(r.inventory_json, []),
     mercy: parseJson(r.mercy_stats_json, { deaths: 0, failStreak: 0, punishments: 0 }),
+    skillsMeta: parseJson(r.skills_json, {}),
   }));
 }
 
