@@ -44,58 +44,24 @@ class GameSessionService {
       });
     });
 
+    // RPG de mesa: começa em narrativa — sem inimigos no tabuleiro.
     const enemies = [];
-    const templates = [ENEMY_TEMPLATES.goblin, ENEMY_TEMPLATES.lobo, ENEMY_TEMPLATES.bandido];
-    for (let i = 0; i < scale.enemyCount; i += 1) {
-      const tpl = templates[i % templates.length];
-      const scaled = applyScaleToEnemy(tpl, scale);
-      const enemy = {
-        id: uuidv4(),
-        kind: 'enemy',
-        key: scaled.key,
-        name: `${scaled.name}${scale.enemyCount > 1 ? ` ${i + 1}` : ''}`,
-        hp: scaled.hp,
-        hpMax: scaled.hpMax,
-        defense: scaled.defense,
-        attackMod: scaled.attackMod,
-        damageDice: scaled.damageDice,
-        weaponKey: scaled.key === 'goblin' ? 'adaga' : 'clava',
-        dmgMult: scaled.dmgMult,
-        attrs: { FOR: 12, DES: 12, CON: 12, INT: 8, SAB: 10, CAR: 8 },
-        status: [],
-        x: 8 + (i % 3),
-        y: 2 + Math.floor(i / 3),
-        color: scaled.color,
-        mercy: { deaths: 0, failStreak: 0, punishments: 0 },
-      };
-      enemies.push(enemy);
-      entities.push({
-        id: enemy.id,
-        kind: 'enemy',
-        name: enemy.name,
-        x: enemy.x,
-        y: enemy.y,
-        color: enemy.color,
-        hp: enemy.hp,
-        hpMax: enemy.hpMax,
-      });
-    }
-
     const adventure = this.gm.pickAdventureSeed();
 
     const session = {
       id: uuidv4(),
       partyId: party.id,
-      mapId: 'taverna_arton',
+      mapId: 'cena_aberta',
       mapW: MAP_W,
       mapH: MAP_H,
       encounterBudget: scale.budget,
       scale,
       adventure,
+      inCombat: false,
       characters,
       enemies,
       world: {
-        mapId: 'taverna_arton',
+        mapId: 'cena_aberta',
         mapW: MAP_W,
         mapH: MAP_H,
         entities,
@@ -122,10 +88,68 @@ class GameSessionService {
     GameFinder.saveSession(session).catch(() => {});
     GameFinder.saveGmMemory(
       session.id,
-      `Aventura: ${adventure.title}. Cenário: ${adventure.setting}. Gancho: ${adventure.hook}. Party de ${partySize}. Ameaças: ${enemies.map((e) => e.name).join(', ') || 'nenhuma'}.`
+      `Aventura: ${adventure.title}. Cenário: ${adventure.setting}. Gancho: ${adventure.hook}. Party de ${partySize}. Modo: narrativa (sem combate ainda).`
     ).catch(() => {});
 
     return session;
+  }
+
+  /**
+   * Entra em combate com ameaça alinhada à aventura (não goblin genérico no start).
+   */
+  beginCombat(session, { reason = 'ameaça' } = {}) {
+    if (session.inCombat && session.enemies.some((e) => e.hp > 0)) {
+      return { spawned: false, enemies: session.enemies };
+    }
+
+    const scale = session.scale || scaleEncounter(Object.keys(session.characters).length, { cr: 1 });
+    const templates = this.templatesForAdventure(session.adventure);
+    const count = Math.max(1, Math.min(scale.enemyCount || 1, 3));
+    const enemies = [];
+
+    for (let i = 0; i < count; i += 1) {
+      const tpl = templates[i % templates.length];
+      const scaled = applyScaleToEnemy(tpl, scale);
+      enemies.push({
+        id: uuidv4(),
+        kind: 'enemy',
+        key: scaled.key,
+        name: `${scaled.name}${count > 1 ? ` ${i + 1}` : ''}`,
+        hp: scaled.hp,
+        hpMax: scaled.hpMax,
+        defense: scaled.defense,
+        attackMod: scaled.attackMod,
+        damageDice: scaled.damageDice,
+        weaponKey: scaled.key === 'goblin' ? 'adaga' : 'clava',
+        dmgMult: scaled.dmgMult,
+        attrs: { FOR: 12, DES: 12, CON: 12, INT: 8, SAB: 10, CAR: 8 },
+        status: [],
+        x: 8 + (i % 3),
+        y: 2 + Math.floor(i / 3),
+        color: scaled.color,
+        mercy: { deaths: 0, failStreak: 0, timeouts: 0 },
+      });
+    }
+
+    session.enemies = enemies;
+    session.inCombat = true;
+    this.syncEntities(session);
+    return { spawned: true, enemies, reason };
+  }
+
+  templatesForAdventure(adventure) {
+    const title = String(adventure?.title || '').toLowerCase();
+    if (/estrada|mensageiro|escolta|sombra/.test(title)) {
+      return [ENEMY_TEMPLATES.bandido, ENEMY_TEMPLATES.lobo];
+    }
+    if (/porto|motim|marin/.test(title)) return [ENEMY_TEMPLATES.bandido];
+    if (/ruína|tormenta|funeral|corvo/.test(title)) {
+      return [ENEMY_TEMPLATES.goblin, ENEMY_TEMPLATES.lobo];
+    }
+    if (/cálice|taverna/.test(title)) {
+      return [ENEMY_TEMPLATES.bandido, ENEMY_TEMPLATES.goblin];
+    }
+    return [ENEMY_TEMPLATES.bandido];
   }
 
   get(sessionId) {
@@ -159,6 +183,7 @@ class GameSessionService {
       encounterBudget: snapshot.encounterBudget || 1,
       scale: snapshot.scale || { partySize: Object.keys(snapshot.characters || {}).length || 1 },
       adventure: snapshot.adventure || null,
+      inCombat: Boolean(snapshot.inCombat) || (snapshot.enemies || []).some((e) => e.hp > 0),
       characters: snapshot.characters || {},
       enemies: snapshot.enemies || [],
       world: snapshot.world || {
@@ -322,10 +347,16 @@ class GameSessionService {
   }
 
   checkOutcome(session) {
-    const enemiesAlive = session.enemies.some((e) => e.hp > 0);
     const playersAlive = Object.values(session.characters).some((c) => !this.isIncapacitated(c));
-    if (!enemiesAlive) return 'victory';
     if (!playersAlive) return 'defeat';
+
+    // Sem combate ativo / sem inimigos: aventura narrativa continua (não é vitória automática).
+    if (!session.inCombat) return null;
+    const enemiesAlive = session.enemies.some((e) => e.hp > 0);
+    if (!enemiesAlive) {
+      session.inCombat = false;
+      return null; // encontro vencido; história segue (não encerra a sessão)
+    }
     return null;
   }
 
@@ -351,7 +382,8 @@ class GameSessionService {
     const effects = [];
     const livingEnemies = session.enemies.filter((e) => e.hp > 0);
 
-    if (!intro) {
+    // Fora de combate: mestre só narra — não ataca a party.
+    if (!intro && session.inCombat && livingEnemies.length) {
       for (const enemy of livingEnemies) {
         const targets = Object.values(session.characters).filter((c) => !this.isIncapacitated(c));
         if (!targets.length) break;
@@ -376,16 +408,15 @@ class GameSessionService {
     let narrative;
     if (intro) {
       const adv = session.adventure;
-      const threat = livingEnemies.length
-        ? ` ${livingEnemies.map((e) => e.name).join(', ')} estão à espreita.`
-        : '';
       narrative = adv
-        ? `Aventura: ${adv.title}. ${adv.setting}. ${adv.hook}${threat}`
-        : `A cena se abre.${threat}`;
+        ? `Aventura: ${adv.title}. ${adv.setting}. ${adv.hook}`
+        : 'A cena se abre. A aventura começa.';
     } else if (combat.some((c) => c.summary)) {
       narrative = combat.map((c) => c.summary).filter(Boolean).join(' ');
+    } else if (session.inCombat && livingEnemies.length) {
+      narrative = 'Os inimigos observam, à espreita.';
     } else {
-      narrative = livingEnemies.length ? 'Os inimigos recuam e observam, à espreita.' : 'A tensão diminui por um instante.';
+      narrative = 'A cena segue. O que a party faz?';
     }
 
     return { narrative, combat, effects };
@@ -558,6 +589,24 @@ class GameSessionService {
     const combat = [];
     const effects = [];
 
+    // Se o jogador partiu para a luta e ainda não há encontro, inicia combate alinhado à aventura.
+    const wantsFight = (gmOut.intents || []).some((i) =>
+      i.type === 'attack' || i.type === 'cast' || i.type === 'skill'
+    );
+    if (wantsFight && !session.enemies.some((e) => e.hp > 0)) {
+      const started = this.beginCombat(session, { reason: 'ação hostil do jogador' });
+      if (started.spawned) {
+        const names = started.enemies.map((e) => e.name).join(', ');
+        gmOut.narrative = `${gmOut.narrative || ''} Das sombras surge o confronto: ${names}!`.trim();
+        // Garante um alvo se o intent veio sem inimigo prévio
+        for (const intent of gmOut.intents || []) {
+          if ((intent.type === 'attack' || intent.type === 'cast' || intent.type === 'skill') && !intent.targetId) {
+            intent.targetId = started.enemies[0]?.name || null;
+          }
+        }
+      }
+    }
+
     for (const intent of gmOut.intents || []) {
       const resolved = this.applyIntent(session, playerId, intent, mercy);
       if (resolved) {
@@ -635,6 +684,13 @@ class GameSessionService {
     }
 
     if (type === 'attack') {
+      if (!session.enemies.some((e) => e.hp > 0)) {
+        return {
+          summary: `${actor.name} se prepara para lutar, mas ainda não há inimigo em combate.`,
+          outcome: 'fail',
+        };
+      }
+      session.inCombat = true;
       const target = this.findTarget(session, intent.targetId || intent.target, playerId);
       if (!target || target.kind === 'player') {
         return { summary: `${actor.name} não encontra um alvo válido.`, outcome: 'fail' };
@@ -744,7 +800,7 @@ class GameSessionService {
     if (mercy.score >= 0.55 && mercy.mods.forceHint) {
       parts.push('O destino parece inclinado a te dar uma chance — observe as falhas do inimigo e uma saída próxima.');
     }
-    return parts.filter(Boolean).join(' ') || 'O tempo passa na taverna...';
+    return parts.filter(Boolean).join(' ') || 'A cena aguarda a próxima ação.';
   }
 }
 

@@ -247,9 +247,14 @@ Responda APENAS JSON:
     const intents = [];
     let narrative = `${actor.name} observa a cena com atenção.`;
 
-    if (/atac|golpe|bater|ferir|lutar|espada|adaga/.test(lower) && enemy) {
-      narrative = `${actor.name} avança em direção a ${enemy.name}, pronto para o embate.`;
-      intents.push({ type: 'attack', targetId: enemy.name });
+    if (/atac|golpe|bater|ferir|lutar|espada|adaga|embate/.test(lower)) {
+      if (enemy) {
+        narrative = `${actor.name} avança em direção a ${enemy.name}, pronto para o embate.`;
+        intents.push({ type: 'attack', targetId: enemy.name });
+      } else {
+        narrative = `${actor.name} parte para o confronto — uma ameaça se revela nas sombras!`;
+        intents.push({ type: 'attack', targetId: null });
+      }
     } else if (/cura|curar|heal/.test(lower)) {
       if (spells.has('cura_ferimentos')) {
         narrative = `${actor.name} canaliza uma bênção, luz suave envolvendo as feridas.`;

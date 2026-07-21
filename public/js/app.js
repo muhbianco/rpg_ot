@@ -101,7 +101,10 @@
       const online = $('#online-count');
       const gm = $('#gm-status');
       if (online) online.textContent = String(meta.online || 0);
-      if (gm) gm.textContent = meta.gemini ? 'Gemini ativo' : 'fallback local';
+      if (gm) {
+        gm.textContent = meta.gemini ? 'Gemini ATIVO' : 'OFFLINE (fallback)';
+        gm.style.color = meta.gemini ? '#5dca7a' : '#e07070';
+      }
       if (meta.catalog) {
         catalog = meta.catalog;
         fillCatalog();
@@ -125,7 +128,6 @@
 
     socket.on('session:start', (payload) => {
       enterGame(payload);
-      pushNarrative('Mestre', 'A sessão começa na Taverna de Arton. As tochas crepitam.');
     });
 
     socket.on('session:state', (payload) => {
@@ -144,9 +146,10 @@
 
     socket.on('narrative:push', (payload) => {
       const who = payload.character || payload.from || 'Mestre';
-      if (payload.text) pushNarrative(who, payload.text);
+      const text = payload.text || '';
+      if (text) pushNarrative(who, text);
       (payload.combat || []).forEach((c) => {
-        if (c.summary) pushNarrative('Combate', c.summary);
+        if (c.summary && !text.includes(c.summary)) pushNarrative('Combate', c.summary);
       });
       if (payload.effects && renderer) renderer.playEffects(payload.effects);
     });
