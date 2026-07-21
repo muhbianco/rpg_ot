@@ -30,6 +30,30 @@
       this.draw();
     }
 
+    playEffects(effects) {
+      if (!Array.isArray(effects) || !effects.length) return;
+      // Aplicação imediata do estado; animações detalhadas entram na evolução do renderer.
+      for (const fx of effects) {
+        if (fx.type === 'move' && fx.id != null) {
+          const ent = (this.world?.entities || []).find((e) => e.id === fx.id);
+          if (ent && fx.x != null) {
+            ent.x = fx.x;
+            ent.y = fx.y;
+          }
+        }
+      }
+      this.draw();
+      this.flashCombat(effects);
+    }
+
+    flashCombat(effects) {
+      const hasHit = effects.some((e) => e.type === 'attack' || e.type === 'cast' || e.type === 'death');
+      if (!hasHit || !this.canvas) return;
+      this.canvas.classList.remove('fx-hit');
+      void this.canvas.offsetWidth;
+      this.canvas.classList.add('fx-hit');
+    }
+
     draw() {
       const { ctx, canvas, world } = this;
       ctx.clearRect(0, 0, canvas.width, canvas.height);

@@ -29,7 +29,6 @@ class DiscordAuthService {
       response_type: 'code',
       scope: this.cfg.scope,
       state,
-      prompt: 'none',
     });
     return `https://discord.com/oauth2/authorize?${params.toString()}`;
   }
