@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>RPG OT — Taverna de Arton</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/main.css" />
+</head>
+<body>
+  <div id="app">
+    <section id="screen-landing" class="screen">
+      <div class="hero-bg"></div>
+      <p class="eyebrow">Universo Tormenta · Mesa multiplayer</p>
+      <h1 class="brand">RPG <span>OT</span></h1>
+      <p class="tagline">Monte a party. Crie o herói. Aventure-se na Taverna de Arton.</p>
+      <button type="button" id="btn-enter" class="btn">ENTRAR</button>
+      <p class="hint"><span id="online-count">0</span> online · Mestre IA: <span id="gm-status">—</span></p>
+    </section>
+
+    <section id="screen-nick" class="screen hidden" aria-hidden="true">
+      <div class="panel narrow">
+        <h2>Seu apelido</h2>
+        <form id="form-nick">
+          <input id="input-nick" maxlength="20" minlength="2" placeholder="Ex: Valena" required autofocus />
+          <p id="nick-error" class="error" role="alert"></p>
+          <button type="submit" class="btn">CONTINUAR</button>
+        </form>
+        <button type="button" id="btn-nick-back" class="btn ghost">Voltar</button>
+      </div>
+    </section>
+
+    <section id="screen-party" class="screen hidden" aria-hidden="true">
+      <div class="panel">
+        <header class="row">
+          <div>
+            <p class="eyebrow">Lobby</p>
+            <h2>Party</h2>
+          </div>
+          <span class="pill" id="you-label">—</span>
+        </header>
+        <div class="party-actions">
+          <button type="button" id="btn-create-party" class="btn">CRIAR PARTY</button>
+          <form id="form-join" class="join-form">
+            <input id="input-code" maxlength="8" placeholder="CÓDIGO" />
+            <button type="submit" class="btn secondary">ENTRAR</button>
+          </form>
+        </div>
+        <div id="party-box" class="party-box hidden">
+          <p>Código: <strong id="party-code">————</strong> · <span id="party-size">0</span>/10</p>
+          <ul id="party-members"></ul>
+          <div class="row gap">
+            <button type="button" id="btn-hall" class="btn">IR AO HALL</button>
+            <button type="button" id="btn-leave-party" class="btn ghost">Sair</button>
+          </div>
+          <p id="party-error" class="error"></p>
+        </div>
+      </div>
+    </section>
+
+    <section id="screen-hall" class="screen hidden" aria-hidden="true">
+      <div class="panel hall">
+        <h2>Hall — monte seu personagem</h2>
+        <p class="muted">Tormenta20 · atributos e dados ficam no servidor. Você só vê HP, mana e status.</p>
+        <form id="form-char" class="char-form">
+          <label>Nome <input id="char-name" maxlength="20" required /></label>
+          <label>Raça
+            <select id="char-race"></select>
+          </label>
+          <label>Classe
+            <select id="char-class"></select>
+          </label>
+          <button type="submit" class="btn">SALVAR FICHA</button>
+        </form>
+        <div id="char-preview" class="char-preview"></div>
+        <button type="button" id="btn-ready" class="btn secondary" disabled>PRONTO</button>
+        <ul id="hall-members"></ul>
+        <p id="hall-error" class="error"></p>
+      </div>
+    </section>
+
+    <section id="screen-game" class="screen game hidden" aria-hidden="true">
+      <aside class="hud">
+        <h2 id="hud-name">—</h2>
+        <p class="hud-class" id="hud-class">—</p>
+        <div class="bar-wrap">
+          <span>HP</span>
+          <div class="bar hp"><i id="bar-hp"></i></div>
+          <span id="hud-hp">0/0</span>
+        </div>
+        <div class="bar-wrap">
+          <span>Mana</span>
+          <div class="bar mp"><i id="bar-mp"></i></div>
+          <span id="hud-mp">0/0</span>
+        </div>
+        <p>Defesa: <strong id="hud-def">—</strong></p>
+        <p>Arma: <strong id="hud-weapon">—</strong></p>
+        <p>Status: <strong id="hud-status">nenhum</strong></p>
+        <div class="party-mini">
+          <h3>Party</h3>
+          <ul id="party-hud"></ul>
+        </div>
+      </aside>
+      <main class="stage">
+        <canvas id="game-canvas" width="720" height="480"></canvas>
+        <div class="narrative" id="narrative-log"></div>
+        <form id="form-action" class="action-form" autocomplete="off">
+          <input id="input-action" maxlength="400" placeholder="O que você faz? (ex: ataco o goblin, caminho para o norte, curo meus ferimentos)" required />
+          <button type="submit" class="btn">AGIR</button>
+        </form>
+        <p id="action-error" class="error"></p>
+      </main>
+    </section>
+  </div>
+
+  <script src="/js/socket.io.min.js"></script>
+  <script src="/js/game/renderer.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>
