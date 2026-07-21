@@ -81,8 +81,28 @@ async function bootstrap() {
 
   app.use(cors({ origin: config.corsOrigin, methods: ['GET'] }));
   app.use(express.json({ limit: '8kb' }));
-  app.use(express.static(path.join(__dirname, '..', 'public'), {
-    maxAge: config.nodeEnv === 'production' ? '1h' : 0,
+
+  const publicDir = path.join(__dirname, '..', 'public');
+
+  // Index sem cache — precisa vir ANTES do static
+  app.get('/', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.sendFile(path.join(publicDir, 'index.html'));
+  });
+
+  app.use(express.static(publicDir, {
+    index: false,
+    etag: true,
+    lastModified: true,
+    setHeaders(res, filePath) {
+      if (filePath.endsWith('.html')) {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      } else if (/\.(js|css)$/.test(filePath)) {
+        res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+      } else {
+        res.setHeader('Cache-Control', config.nodeEnv === 'production' ? 'public, max-age=3600' : 'no-cache');
+      }
+    },
   }));
 
   app.get('/health', (_req, res) => {

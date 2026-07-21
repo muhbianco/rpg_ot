@@ -54,7 +54,8 @@
 
   function setUserChip(player) {
     me = player;
-    $('#you-label').textContent = player.nickname || '—';
+    const label = $('#you-label');
+    if (label) label.textContent = player.nickname || '—';
     const av = $('#you-avatar');
     if (av) {
       if (player.avatar) {
@@ -68,17 +69,22 @@
     if (nameInput && !nameInput.value) nameInput.value = player.nickname || '';
   }
 
+  function requireSocket() {
+    if (socket) return socket;
+    return connect();
+  }
+
   function connect() {
     if (socket) return socket;
     socket = io({ transports: ['websocket', 'polling'], reconnection: true });
 
     socket.on('connect_error', (err) => {
-      const msg = String(err?.message || err);
-      if (msg.includes('unauthorized') || msg.includes('auth_unavailable')) {
+      const msg = String(err && err.message ? err.message : err);
+      if (msg.indexOf('unauthorized') >= 0 || msg.indexOf('auth_unavailable') >= 0) {
         show('landing');
         const el = $('#auth-error');
         if (el) {
-          el.textContent = msg.includes('auth_unavailable')
+          el.textContent = msg.indexOf('auth_unavailable') >= 0
             ? AUTH_MESSAGES.disabled
             : 'Sessão expirada. Entre com Discord novamente.';
         }
@@ -86,13 +92,15 @@
     });
 
     socket.on('auth:ok', (payload) => {
-      if (payload?.player) setUserChip(payload.player);
+      if (payload && payload.player) setUserChip(payload.player);
       show('party');
     });
 
     socket.on('meta', (meta) => {
-      $('#online-count').textContent = String(meta.online || 0);
-      $('#gm-status').textContent = meta.gemini ? 'Gemini ativo' : 'fallback local';
+      const online = $('#online-count');
+      const gm = $('#gm-status');
+      if (online) online.textContent = String(meta.online || 0);
+      if (gm) gm.textContent = meta.gemini ? 'Gemini ativo' : 'fallback local';
       if (meta.catalog) {
         catalog = meta.catalog;
         fillCatalog();
@@ -157,7 +165,8 @@
   function enterGame(payload) {
     show('game');
     ensureRenderer();
-    $('#narrative-log').replaceChildren();
+    const log = $('#narrative-log');
+    if (log) log.replaceChildren();
     if (payload.world) renderer.setWorld(payload.world);
     renderPartyHud(payload.partyHud || payload.party || []);
     if (payload.hud) renderHud(payload.hud);
@@ -168,14 +177,19 @@
 
   function highlightTurnActor(turn) {
     if (!renderer || !turn) return;
-    const actorId = turn.current === 'gm' ? null : (
-      (renderer.world?.entities || []).find((e) => e.playerId === turn.current)?.id || null
-    );
+    let actorId = null;
+    if (turn.current !== 'gm' && renderer.world && renderer.world.entities) {
+      const ent = renderer.world.entities.find((e) => e.playerId === turn.current);
+      actorId = ent ? ent.id : null;
+    }
     renderer.setFocus(actorId);
   }
 
   function ensureRenderer() {
-    if (!renderer) renderer = new window.OtRenderer($('#game-canvas'));
+    if (!renderer) {
+      const canvas = $('#game-canvas');
+      if (canvas && window.OtRenderer) renderer = new window.OtRenderer(canvas);
+    }
   }
 
   function fillCatalog() {
@@ -185,26 +199,26 @@
     if (!raceSel || !classSel) return;
     raceSel.replaceChildren();
     classSel.replaceChildren();
-    catalog.races.forEach((r) => {
+    (catalog.races || []).forEach((r) => {
       const o = document.createElement('option');
       o.value = r.key;
       o.textContent = r.label;
       raceSel.appendChild(o);
     });
-    catalog.classes.forEach((c) => {
+    (catalog.classes || []).forEach((c) => {
       const o = document.createElement('option');
       o.value = c.key;
-      o.textContent = `${c.label} (${c.weapon || '—'})`;
+      o.textContent = c.label + (c.weapon ? ' (' + c.weapon + ')' : '');
       classSel.appendChild(o);
     });
   }
 
   function initAttrEditor() {
     const wrap = $('#attr-editor');
-    if (!wrap || !catalog?.pointBuy) return;
+    if (!wrap || !catalog || !catalog.pointBuy) return;
     const pb = catalog.pointBuy;
-    const classKey = $('#char-class')?.value || 'guerreiro';
-    if (!attrState) attrState = { ...(pb.presets[classKey] || pb.presets.guerreiro) };
+    const classKey = ($('#char-class') && $('#char-class').value) || 'guerreiro';
+    if (!attrState) attrState = Object.assign({}, pb.presets[classKey] || pb.presets.guerreiro);
     if (wrap.childElementCount) {
       renderAttrEditor();
       return;
@@ -214,13 +228,13 @@
       const row = document.createElement('div');
       row.className = 'attr-row';
       row.dataset.attr = key;
-      row.innerHTML = `
-        <span class="attr-label">${catalog.attrLabels?.[key] || key}</span>
-        <button type="button" class="attr-btn" data-dir="-1" aria-label="Diminuir ${key}">−</button>
-        <span class="attr-val">${attrState[key]}</span>
-        <button type="button" class="attr-btn" data-dir="1" aria-label="Aumentar ${key}">+</button>
-        <span class="attr-mod"></span>
-      `;
+      const label = (catalog.attrLabels && catalog.attrLabels[key]) || key;
+      row.innerHTML =
+        '<span class="attr-label">' + label + '</span>' +
+        '<button type="button" class="attr-btn" data-dir="-1">−</button>' +
+        '<span class="attr-val">' + attrState[key] + '</span>' +
+        '<button type="button" class="attr-btn" data-dir="1">+</button>' +
+        '<span class="attr-mod"></span>';
       wrap.appendChild(row);
     });
     wrap.addEventListener('click', (e) => {
@@ -231,7 +245,8 @@
       const dir = Number(btn.dataset.dir);
       const next = attrState[key] + dir;
       if (next < pb.min || next > pb.max) return;
-      const trial = { ...attrState, [key]: next };
+      const trial = Object.assign({}, attrState);
+      trial[key] = next;
       if (spentPoints(trial) > pb.pool) return;
       attrState[key] = next;
       renderAttrEditor();
@@ -241,30 +256,31 @@
   }
 
   function spentPoints(attrs) {
-    const cost = catalog?.pointBuy?.cost || {};
+    const cost = (catalog && catalog.pointBuy && catalog.pointBuy.cost) || {};
     return (catalog.attrs || []).reduce((sum, k) => sum + (cost[attrs[k]] || 0), 0);
   }
 
   function renderAttrEditor() {
-    if (!attrState || !catalog?.pointBuy) return;
+    if (!attrState || !catalog || !catalog.pointBuy) return;
     const pb = catalog.pointBuy;
     const spent = spentPoints(attrState);
-    const rem = pb.pool - spent;
     const remEl = $('#attr-remaining');
-    if (remEl) remEl.textContent = `${rem} pontos restantes (${spent}/${pb.pool})`;
-    $('#attr-editor')?.querySelectorAll('.attr-row').forEach((row) => {
+    if (remEl) remEl.textContent = (pb.pool - spent) + ' pontos restantes (' + spent + '/' + pb.pool + ')';
+    const wrap = $('#attr-editor');
+    if (!wrap) return;
+    wrap.querySelectorAll('.attr-row').forEach((row) => {
       const key = row.dataset.attr;
       const v = attrState[key];
       row.querySelector('.attr-val').textContent = String(v);
       const mod = Math.floor((v - 10) / 2);
-      row.querySelector('.attr-mod').textContent = mod >= 0 ? `+${mod}` : String(mod);
+      row.querySelector('.attr-mod').textContent = mod >= 0 ? '+' + mod : String(mod);
     });
   }
 
   function applyClassPreset() {
-    if (!catalog?.pointBuy) return;
-    const classKey = $('#char-class')?.value || 'guerreiro';
-    attrState = { ...(catalog.pointBuy.presets[classKey] || catalog.pointBuy.presets.guerreiro) };
+    if (!catalog || !catalog.pointBuy) return;
+    const classKey = ($('#char-class') && $('#char-class').value) || 'guerreiro';
+    attrState = Object.assign({}, catalog.pointBuy.presets[classKey] || catalog.pointBuy.presets.guerreiro);
     renderAttrEditor();
     requestPreview();
   }
@@ -275,40 +291,53 @@
     clearTimeout(previewTimer);
     previewTimer = setTimeout(() => {
       socket.emit('character:preview', {
-        name: $('#char-name')?.value,
-        race: $('#char-race')?.value,
-        classKey: $('#char-class')?.value,
+        name: $('#char-name') && $('#char-name').value,
+        race: $('#char-race') && $('#char-race').value,
+        classKey: $('#char-class') && $('#char-class').value,
         attrs: attrState,
       }, (res) => {
-        if (!res?.ok || !res.hud) return;
+        if (!res || !res.ok || !res.hud) return;
         const c = res.hud;
-        $('#char-preview').textContent =
-          `${c.name} — ${c.race} ${c.class} | HP ${c.hp}/${c.hpMax} | Mana ${c.mp}/${c.mpMax} | Def ${c.defense} | ${c.weapon}`;
+        const preview = $('#char-preview');
+        if (preview) {
+          preview.textContent =
+            c.name + ' — ' + c.race + ' ' + c.class +
+            ' | HP ' + c.hp + '/' + c.hpMax +
+            ' | Mana ' + c.mp + '/' + c.mpMax +
+            ' | Def ' + c.defense + ' | ' + c.weapon;
+        }
       });
     }, 200);
   }
 
   function renderParty() {
     const box = $('#party-box');
+    if (!box) return;
     if (!party) {
       box.classList.add('hidden');
       return;
     }
     box.classList.remove('hidden');
-    $('#party-code').textContent = party.code;
-    $('#party-size').textContent = String(party.size);
+    const code = $('#party-code');
+    const size = $('#party-size');
+    if (code) code.textContent = party.code;
+    if (size) size.textContent = String(party.size);
     const ul = $('#party-members');
+    if (!ul) return;
     ul.replaceChildren();
     (party.members || []).forEach((m) => {
       const li = document.createElement('li');
       const host = m.playerId === party.hostId ? ' (host)' : '';
       const ready = m.ready ? ' ✓' : '';
-      const char = m.character ? ` — ${m.character.name} (${m.character.class})` : '';
-      li.textContent = `${m.nickname}${host}${ready}${char}`;
+      const char = m.character ? ' — ' + m.character.name + ' (' + m.character.class + ')' : '';
+      li.textContent = m.nickname + host + ready + char;
       ul.appendChild(li);
     });
-    const isHost = me && party.hostId === me.id;
-    $('#btn-hall').style.display = isHost && party.status === 'lobby' ? '' : 'none';
+    const hallBtn = $('#btn-hall');
+    if (hallBtn) {
+      const isHost = me && party.hostId === me.id;
+      hallBtn.style.display = isHost && party.status === 'lobby' ? '' : 'none';
+    }
   }
 
   function renderHallMembers() {
@@ -317,34 +346,41 @@
     ul.replaceChildren();
     (party.members || []).forEach((m) => {
       const li = document.createElement('li');
-      li.textContent = `${m.nickname}: ${m.character ? `${m.character.name} / ${m.character.class}` : 'montando...'} ${m.ready ? '[PRONTO]' : ''}`;
+      li.textContent =
+        m.nickname + ': ' +
+        (m.character ? m.character.name + ' / ' + m.character.class : 'montando...') +
+        (m.ready ? ' [PRONTO]' : '');
       ul.appendChild(li);
     });
   }
 
   function renderHud(hud) {
     if (!hud) return;
-    $('#hud-name').textContent = hud.name;
-    $('#hud-class').textContent = `${hud.race} · ${hud.class} Nv.${hud.level}`;
-    $('#hud-hp').textContent = `${hud.hp}/${hud.hpMax}`;
-    $('#hud-mp').textContent = `${hud.mp}/${hud.mpMax}`;
-    $('#bar-hp').style.width = `${hud.hpMax ? (hud.hp / hud.hpMax) * 100 : 0}%`;
-    $('#bar-mp').style.width = `${hud.mpMax ? (hud.mp / hud.mpMax) * 100 : 0}%`;
-    $('#hud-def').textContent = String(hud.defense);
-    $('#hud-weapon').textContent = hud.weapon || '—';
-    $('#hud-status').textContent = (hud.status && hud.status.length) ? hud.status.join(', ') : 'nenhum';
+    const set = (id, val) => { const el = $(id); if (el) el.textContent = val; };
+    set('#hud-name', hud.name);
+    set('#hud-class', hud.race + ' · ' + hud.class + ' Nv.' + hud.level);
+    set('#hud-hp', hud.hp + '/' + hud.hpMax);
+    set('#hud-mp', hud.mp + '/' + hud.mpMax);
+    set('#hud-def', String(hud.defense));
+    set('#hud-weapon', hud.weapon || '—');
+    set('#hud-status', (hud.status && hud.status.length) ? hud.status.join(', ') : 'nenhum');
+    const barHp = $('#bar-hp');
+    const barMp = $('#bar-mp');
+    if (barHp) barHp.style.width = (hud.hpMax ? (hud.hp / hud.hpMax) * 100 : 0) + '%';
+    if (barMp) barMp.style.width = (hud.mpMax ? (hud.mp / hud.mpMax) * 100 : 0) + '%';
   }
 
   function renderPartyHud(list) {
     if (!list) return;
     const ul = $('#party-hud');
+    if (!ul) return;
     ul.replaceChildren();
     list.forEach((p) => {
       const li = document.createElement('li');
       li.dataset.playerId = p.playerId || '';
-      const mine = p.playerId === me?.id ? ' ★' : '';
-      li.textContent = `${p.name} ${p.hpPct}%${mine}`;
-      if (currentTurn?.current === p.playerId) li.classList.add('turn-active');
+      const mine = p.playerId === (me && me.id) ? ' ★' : '';
+      li.textContent = p.name + ' ' + p.hpPct + '%' + mine;
+      if (currentTurn && currentTurn.current === p.playerId) li.classList.add('turn-active');
       ul.appendChild(li);
     });
   }
@@ -355,14 +391,20 @@
     if (banner && turn) {
       banner.textContent = turn.outcome
         ? (turn.outcome === 'victory' ? 'Vitória!' : 'Derrota')
-        : `Rodada ${turn.round} · Turno: ${turn.currentName}`;
-      banner.classList.toggle('my-turn', turn.current === me?.id);
+        : 'Rodada ' + turn.round + ' · Turno: ' + turn.currentName;
+      banner.classList.toggle('my-turn', !!(me && turn.current === me.id));
     }
-    const myTurn = Boolean(turn && me && turn.current === me.id && !turn.outcome);
-    setActionEnabled(myTurn, myTurn ? 'O que você faz?' : (turn?.currentName ? `Aguardando ${turn.currentName}...` : 'Aguarde o turno'));
-    $('#party-hud')?.querySelectorAll('li').forEach((li) => {
-      li.classList.toggle('turn-active', li.dataset.playerId === turn?.current);
-    });
+    const myTurn = !!(turn && me && turn.current === me.id && !turn.outcome);
+    setActionEnabled(
+      myTurn,
+      myTurn ? 'O que você faz?' : (turn && turn.currentName ? 'Aguardando ' + turn.currentName + '...' : 'Aguarde o turno')
+    );
+    const ul = $('#party-hud');
+    if (ul) {
+      ul.querySelectorAll('li').forEach((li) => {
+        li.classList.toggle('turn-active', li.dataset.playerId === (turn && turn.current));
+      });
+    }
   }
 
   function setActionEnabled(enabled, placeholder) {
@@ -377,60 +419,96 @@
 
   function pushNarrative(who, text) {
     const log = $('#narrative-log');
+    if (!log) return;
     const div = document.createElement('div');
     div.className = 'entry';
-    div.innerHTML = `<span class="who"></span> <span class="msg"></span>`;
-    div.querySelector('.who').textContent = who + ':';
-    div.querySelector('.msg').textContent = text;
+    const whoEl = document.createElement('span');
+    whoEl.className = 'who';
+    whoEl.textContent = who + ':';
+    const msgEl = document.createElement('span');
+    msgEl.className = 'msg';
+    msgEl.textContent = ' ' + text;
+    div.appendChild(whoEl);
+    div.appendChild(msgEl);
     log.appendChild(div);
     log.scrollTop = log.scrollHeight;
   }
 
   function statusLabel(status) {
-    return {
-      lobby: 'Lobby',
-      hall: 'Hall',
-      active: 'Em andamento',
-      ended: 'Finalizado',
-    }[status] || status;
+    return ({ lobby: 'Lobby', hall: 'Hall', active: 'Em andamento', ended: 'Finalizado' })[status] || status;
+  }
+
+  function openMyGames() {
+    show('games');
+    const recap = $('#recap-box');
+    if (recap) recap.classList.add('hidden');
+    loadGames();
+  }
+
+  function goLobbyFromGame() {
+    party = null;
+    currentTurn = null;
+    show('party');
+    renderParty();
+    try {
+      requireSocket().emit('party:leave', {}, function () {});
+    } catch (e) { /* ignore */ }
   }
 
   function loadGames() {
-    $('#games-error').textContent = '';
-    socket.emit('games:list', {}, (res) => {
-      if (!res?.ok) {
-        $('#games-error').textContent = res?.error || 'Falha ao listar.';
+    const errEl = $('#games-error');
+    if (errEl) errEl.textContent = '';
+    let s;
+    try {
+      s = requireSocket();
+    } catch (e) {
+      if (errEl) errEl.textContent = 'Sem conexão.';
+      return;
+    }
+    if (!s) {
+      if (errEl) errEl.textContent = 'Sem conexão. Recarregue a página.';
+      return;
+    }
+    s.emit('games:list', {}, (res) => {
+      if (!res || !res.ok) {
+        if (errEl) errEl.textContent = (res && res.error) || 'Falha ao listar.';
         return;
       }
       const list = $('#games-list');
+      if (!list) return;
       list.replaceChildren();
       const empty = $('#games-empty');
-      if (!res.games?.length) {
-        empty.classList.remove('hidden');
+      if (!res.games || !res.games.length) {
+        if (empty) empty.classList.remove('hidden');
         return;
       }
-      empty.classList.add('hidden');
+      if (empty) empty.classList.add('hidden');
       res.games.forEach((g) => {
         const li = document.createElement('li');
         li.className = 'game-item';
         const cls = CLASS_LABELS[g.charClass] || g.charClass || '—';
         const when = g.updatedAt ? new Date(g.updatedAt).toLocaleString('pt-BR') : '';
-        li.innerHTML = `
-          <div class="game-main">
-            <strong>${g.code}</strong>
-            <span class="pill status-${g.status}">${statusLabel(g.status)}</span>
-            <span class="muted">${g.charName || 'sem ficha'} · ${cls} · ${g.memberCount} jogadores</span>
-            <span class="muted tiny">${when}</span>
-          </div>
-          <div class="game-actions"></div>
-        `;
-        const actions = li.querySelector('.game-actions');
+        const main = document.createElement('div');
+        main.className = 'game-main';
+        main.innerHTML =
+          '<strong></strong> <span class="pill"></span>' +
+          '<span class="muted"></span><span class="muted tiny"></span>';
+        main.querySelector('strong').textContent = g.code;
+        const pill = main.querySelector('.pill');
+        pill.classList.add('status-' + g.status);
+        pill.textContent = statusLabel(g.status);
+        main.querySelectorAll('.muted')[0].textContent =
+          (g.charName || 'sem ficha') + ' · ' + cls + ' · ' + g.memberCount + ' jogadores';
+        main.querySelectorAll('.muted')[1].textContent = when;
+        const actions = document.createElement('div');
+        actions.className = 'game-actions';
         if (g.canRejoin || g.canResumeLobby) {
           const btn = document.createElement('button');
           btn.type = 'button';
           btn.className = 'btn tiny';
           btn.textContent = g.canRejoin ? 'Reentrar' : 'Retomar';
-          btn.addEventListener('click', () => rejoinGame(g.partyId));
+          btn.setAttribute('data-nav', 'rejoin');
+          btn.setAttribute('data-party-id', g.partyId);
           actions.appendChild(btn);
         }
         if (g.status === 'ended' || g.sessionId) {
@@ -438,19 +516,23 @@
           btn.type = 'button';
           btn.className = 'btn ghost tiny';
           btn.textContent = 'Ver recap';
-          btn.addEventListener('click', () => loadRecap(g.partyId));
+          btn.setAttribute('data-nav', 'recap');
+          btn.setAttribute('data-party-id', g.partyId);
           actions.appendChild(btn);
         }
+        li.appendChild(main);
+        li.appendChild(actions);
         list.appendChild(li);
       });
     });
   }
 
   function rejoinGame(partyId) {
-    $('#games-error').textContent = '';
-    socket.emit('games:rejoin', { partyId }, (res) => {
-      if (!res?.ok) {
-        $('#games-error').textContent = res?.error || 'Falha ao reentrar.';
+    const errEl = $('#games-error');
+    if (errEl) errEl.textContent = '';
+    requireSocket().emit('games:rejoin', { partyId: partyId }, (res) => {
+      if (!res || !res.ok) {
+        if (errEl) errEl.textContent = (res && res.error) || 'Falha ao reentrar.';
         return;
       }
       party = res.party;
@@ -469,34 +551,42 @@
   }
 
   function loadRecap(partyId) {
-    $('#games-error').textContent = '';
-    socket.emit('games:recap', { partyId }, (res) => {
-      if (!res?.ok) {
-        $('#games-error').textContent = res?.error || 'Falha no recap.';
+    const errEl = $('#games-error');
+    if (errEl) errEl.textContent = '';
+    requireSocket().emit('games:recap', { partyId: partyId }, (res) => {
+      if (!res || !res.ok) {
+        if (errEl) errEl.textContent = (res && res.error) || 'Falha no recap.';
         return;
       }
       const r = res.recap;
       const box = $('#recap-box');
+      if (!box) return;
       box.classList.remove('hidden');
-      $('#recap-title').textContent = `Recap · ${r.code || partyId.slice(0, 8)}`;
+      const title = $('#recap-title');
+      if (title) title.textContent = 'Recap · ' + (r.code || String(partyId).slice(0, 8));
       const outcome = r.outcome === 'victory' ? 'Vitória' : r.outcome === 'defeat' ? 'Derrota' : statusLabel(r.status);
-      $('#recap-meta').textContent = `${outcome}${r.endedAt ? ` · ${new Date(r.endedAt).toLocaleString('pt-BR')}` : ''}`;
+      const meta = $('#recap-meta');
+      if (meta) meta.textContent = outcome + (r.endedAt ? ' · ' + new Date(r.endedAt).toLocaleString('pt-BR') : '');
       const chars = $('#recap-chars');
-      chars.replaceChildren();
-      (r.characters || []).forEach((c) => {
-        const li = document.createElement('li');
-        li.textContent = `${c.name} (${c.class}) — HP ${c.hp}/${c.hpMax}`;
-        chars.appendChild(li);
-      });
+      if (chars) {
+        chars.replaceChildren();
+        (r.characters || []).forEach((c) => {
+          const li = document.createElement('li');
+          li.textContent = c.name + ' (' + c.class + ') — HP ' + c.hp + '/' + c.hpMax;
+          chars.appendChild(li);
+        });
+      }
       const log = $('#recap-log');
-      log.replaceChildren();
-      const lines = (r.log && r.log.length ? r.log : r.actions) || [];
-      lines.forEach((l) => {
-        const div = document.createElement('div');
-        div.className = 'entry';
-        div.textContent = l.text;
-        log.appendChild(div);
-      });
+      if (log) {
+        log.replaceChildren();
+        const lines = (r.log && r.log.length ? r.log : r.actions) || [];
+        lines.forEach((l) => {
+          const div = document.createElement('div');
+          div.className = 'entry';
+          div.textContent = l.text;
+          log.appendChild(div);
+        });
+      }
     });
   }
 
@@ -510,9 +600,9 @@
         if (btn) {
           btn.classList.add('disabled');
           btn.setAttribute('aria-disabled', 'true');
-          btn.addEventListener('click', (e) => e.preventDefault());
         }
-        $('#auth-error').textContent = AUTH_MESSAGES.disabled;
+        const err = $('#auth-error');
+        if (err) err.textContent = AUTH_MESSAGES.disabled;
         show('landing');
         return;
       }
@@ -526,148 +616,216 @@
         return;
       }
       const meData = await meRes.json();
-      if (meData?.player) setUserChip(meData.player);
+      if (meData && meData.player) setUserChip(meData.player);
       connect();
       show('party');
-    } catch {
+    } catch (e) {
       show('landing');
-      $('#auth-error').textContent = 'Não foi possível verificar a sessão.';
+      const err = $('#auth-error');
+      if (err) err.textContent = 'Não foi possível verificar a sessão.';
     }
   }
 
-  $('#btn-goto-games')?.addEventListener('click', () => {
-    show('games');
-    $('#recap-box').classList.add('hidden');
-    loadGames();
-  });
+  // Delegação única — garante que os botões funcionem
+  const appRoot = document.getElementById('app');
+  if (appRoot) {
+    appRoot.addEventListener('click', (e) => {
+      const t = e.target.closest(
+        '#btn-goto-games, #btn-games-back, #btn-recap-close, #btn-hall-back, #btn-game-lobby, ' +
+        '#btn-create-party, #btn-leave-party, #btn-hall, #btn-ready, #btn-attr-reset, [data-nav]'
+      );
+      if (!t) return;
 
-  $('#btn-games-back')?.addEventListener('click', () => show('party'));
-  $('#btn-recap-close')?.addEventListener('click', () => $('#recap-box').classList.add('hidden'));
-
-  $('#btn-hall-back')?.addEventListener('click', () => {
-    show('party');
-    renderParty();
-  });
-
-  $('#btn-game-lobby')?.addEventListener('click', () => {
-    socket.emit('party:leave', {}, () => {
-      party = null;
-      currentTurn = null;
-      show('party');
-      renderParty();
-    });
-  });
-
-  $('#btn-create-party')?.addEventListener('click', () => {
-    $('#party-error').textContent = '';
-    socket.emit('party:create', {}, (res) => {
-      if (!res?.ok) {
-        $('#party-error').textContent = res?.error || 'Falha';
+      const nav = t.getAttribute('data-nav');
+      if (nav === 'rejoin') {
+        e.preventDefault();
+        rejoinGame(t.getAttribute('data-party-id'));
         return;
       }
-      party = res.party;
-      renderParty();
-    });
-  });
-
-  $('#form-join')?.addEventListener('submit', (e) => {
-    e.preventDefault();
-    $('#party-error').textContent = '';
-    socket.emit('party:join', { code: $('#input-code').value }, (res) => {
-      if (!res?.ok) {
-        $('#party-error').textContent = res?.error || 'Falha';
+      if (nav === 'recap') {
+        e.preventDefault();
+        loadRecap(t.getAttribute('data-party-id'));
         return;
       }
-      party = res.party;
-      renderParty();
-    });
-  });
 
-  $('#btn-leave-party')?.addEventListener('click', () => {
-    socket.emit('party:leave', {}, () => {
-      party = null;
-      renderParty();
-    });
-  });
-
-  $('#btn-hall')?.addEventListener('click', () => {
-    $('#party-error').textContent = '';
-    socket.emit('party:start_hall', {}, (res) => {
-      if (!res?.ok) {
-        $('#party-error').textContent = res?.error || 'Falha';
+      if (t.id === 'btn-goto-games') {
+        e.preventDefault();
+        openMyGames();
         return;
       }
-      party = res.party;
-      show('hall');
-      initAttrEditor();
-    });
-  });
-
-  $('#char-class')?.addEventListener('change', applyClassPreset);
-  $('#char-race')?.addEventListener('change', requestPreview);
-  $('#char-name')?.addEventListener('input', requestPreview);
-  $('#btn-attr-reset')?.addEventListener('click', applyClassPreset);
-
-  $('#form-char')?.addEventListener('submit', (e) => {
-    e.preventDefault();
-    $('#hall-error').textContent = '';
-    readySent = false;
-    socket.emit('character:submit', {
-      name: $('#char-name').value,
-      race: $('#char-race').value,
-      classKey: $('#char-class').value,
-      attrs: attrState,
-    }, (res) => {
-      if (!res?.ok) {
-        $('#hall-error').textContent = res?.error || 'Falha';
+      if (t.id === 'btn-games-back') {
+        e.preventDefault();
+        show('party');
         return;
       }
-      party = res.party;
-      const c = res.character;
-      $('#char-preview').textContent =
-        `${c.name} — ${c.race} ${c.class} | HP ${c.hp}/${c.hpMax} | Mana ${c.mp}/${c.mpMax} | Def ${c.defense} | ${c.weapon}`;
-      $('#btn-ready').disabled = false;
-      renderHallMembers();
-    });
-  });
-
-  $('#btn-ready')?.addEventListener('click', () => {
-    if (readySent) return;
-    $('#hall-error').textContent = '';
-    socket.emit('party:ready', { ready: true }, (res) => {
-      if (!res?.ok) {
-        $('#hall-error').textContent = res?.error || 'Falha';
+      if (t.id === 'btn-recap-close') {
+        e.preventDefault();
+        const box = $('#recap-box');
+        if (box) box.classList.add('hidden');
         return;
       }
-      readySent = true;
-      party = res.party;
-      $('#btn-ready').textContent = 'AGUARDANDO PARTY...';
-      $('#btn-ready').disabled = true;
-      renderHallMembers();
-    });
-  });
-
-  $('#form-action')?.addEventListener('submit', (e) => {
-    e.preventDefault();
-    if (!currentTurn || currentTurn.current !== me?.id) {
-      $('#action-error').textContent = 'Não é o seu turno.';
-      return;
-    }
-    const text = $('#input-action').value.trim();
-    if (!text) return;
-    $('#action-error').textContent = '';
-    $('#input-action').value = '';
-    setActionEnabled(false, 'Resolvendo...');
-    socket.emit('action:submit', { text }, (res) => {
-      if (!res?.ok) {
-        $('#action-error').textContent = res?.error || 'Falha';
-        if (currentTurn) applyTurn(currentTurn);
+      if (t.id === 'btn-hall-back') {
+        e.preventDefault();
+        show('party');
+        renderParty();
         return;
       }
-      if (res.result?.hud) renderHud(res.result.hud);
-      if (res.result?.turn) applyTurn(res.result.turn);
+      if (t.id === 'btn-game-lobby') {
+        e.preventDefault();
+        goLobbyFromGame();
+        return;
+      }
+      if (t.id === 'btn-create-party') {
+        e.preventDefault();
+        const err = $('#party-error');
+        if (err) err.textContent = '';
+        requireSocket().emit('party:create', {}, (res) => {
+          if (!res || !res.ok) {
+            if (err) err.textContent = (res && res.error) || 'Falha';
+            return;
+          }
+          party = res.party;
+          renderParty();
+        });
+        return;
+      }
+      if (t.id === 'btn-leave-party') {
+        e.preventDefault();
+        requireSocket().emit('party:leave', {}, () => {
+          party = null;
+          renderParty();
+        });
+        return;
+      }
+      if (t.id === 'btn-hall') {
+        e.preventDefault();
+        const err = $('#party-error');
+        if (err) err.textContent = '';
+        requireSocket().emit('party:start_hall', {}, (res) => {
+          if (!res || !res.ok) {
+            if (err) err.textContent = (res && res.error) || 'Falha';
+            return;
+          }
+          party = res.party;
+          show('hall');
+          initAttrEditor();
+        });
+        return;
+      }
+      if (t.id === 'btn-ready') {
+        e.preventDefault();
+        if (readySent) return;
+        const err = $('#hall-error');
+        if (err) err.textContent = '';
+        requireSocket().emit('party:ready', { ready: true }, (res) => {
+          if (!res || !res.ok) {
+            if (err) err.textContent = (res && res.error) || 'Falha';
+            return;
+          }
+          readySent = true;
+          party = res.party;
+          const readyBtn = $('#btn-ready');
+          if (readyBtn) {
+            readyBtn.textContent = 'AGUARDANDO PARTY...';
+            readyBtn.disabled = true;
+          }
+          renderHallMembers();
+        });
+        return;
+      }
+      if (t.id === 'btn-attr-reset') {
+        e.preventDefault();
+        applyClassPreset();
+      }
     });
-  });
+  }
+
+  const formJoin = $('#form-join');
+  if (formJoin) {
+    formJoin.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const err = $('#party-error');
+      if (err) err.textContent = '';
+      const codeInput = $('#input-code');
+      requireSocket().emit('party:join', { code: codeInput ? codeInput.value : '' }, (res) => {
+        if (!res || !res.ok) {
+          if (err) err.textContent = (res && res.error) || 'Falha';
+          return;
+        }
+        party = res.party;
+        renderParty();
+      });
+    });
+  }
+
+  const charClass = $('#char-class');
+  if (charClass) charClass.addEventListener('change', applyClassPreset);
+  const charRace = $('#char-race');
+  if (charRace) charRace.addEventListener('change', requestPreview);
+  const charName = $('#char-name');
+  if (charName) charName.addEventListener('input', requestPreview);
+
+  const formChar = $('#form-char');
+  if (formChar) {
+    formChar.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const err = $('#hall-error');
+      if (err) err.textContent = '';
+      readySent = false;
+      requireSocket().emit('character:submit', {
+        name: $('#char-name') && $('#char-name').value,
+        race: $('#char-race') && $('#char-race').value,
+        classKey: $('#char-class') && $('#char-class').value,
+        attrs: attrState,
+      }, (res) => {
+        if (!res || !res.ok) {
+          if (err) err.textContent = (res && res.error) || 'Falha';
+          return;
+        }
+        party = res.party;
+        const c = res.character;
+        const preview = $('#char-preview');
+        if (preview && c) {
+          preview.textContent =
+            c.name + ' — ' + c.race + ' ' + c.class +
+            ' | HP ' + c.hp + '/' + c.hpMax +
+            ' | Mana ' + c.mp + '/' + c.mpMax +
+            ' | Def ' + c.defense + ' | ' + c.weapon;
+        }
+        const readyBtn = $('#btn-ready');
+        if (readyBtn) readyBtn.disabled = false;
+        renderHallMembers();
+      });
+    });
+  }
+
+  const formAction = $('#form-action');
+  if (formAction) {
+    formAction.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (!currentTurn || !me || currentTurn.current !== me.id) {
+        const err = $('#action-error');
+        if (err) err.textContent = 'Não é o seu turno.';
+        return;
+      }
+      const input = $('#input-action');
+      const text = input ? input.value.trim() : '';
+      if (!text) return;
+      const err = $('#action-error');
+      if (err) err.textContent = '';
+      if (input) input.value = '';
+      setActionEnabled(false, 'Resolvendo...');
+      requireSocket().emit('action:submit', { text: text }, (res) => {
+        if (!res || !res.ok) {
+          if (err) err.textContent = (res && res.error) || 'Falha';
+          if (currentTurn) applyTurn(currentTurn);
+          return;
+        }
+        if (res.result && res.result.hud) renderHud(res.result.hud);
+        if (res.result && res.result.turn) applyTurn(res.result.turn);
+      });
+    });
+  }
 
   boot();
 })();
