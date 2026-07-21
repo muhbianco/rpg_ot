@@ -2,6 +2,15 @@
 
 const ATTRS = ['FOR', 'DES', 'CON', 'INT', 'SAB', 'CAR'];
 
+const ATTR_LABELS = {
+  FOR: 'Força',
+  DES: 'Destreza',
+  CON: 'Constituição',
+  INT: 'Inteligência',
+  SAB: 'Sabedoria',
+  CAR: 'Carisma',
+};
+
 const RACES = {
   humano: { label: 'Humano', bonus: { FOR: 1, DES: 1, CON: 1, INT: 1, SAB: 1, CAR: 1 } },
   anao: { label: 'Anão', bonus: { CON: 2, FOR: 1 } },
@@ -129,6 +138,7 @@ function attrMod(score) {
 
 module.exports = {
   ATTRS,
+  ATTR_LABELS,
   RACES,
   CLASSES,
   WEAPONS,

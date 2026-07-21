@@ -13,8 +13,10 @@ const GameFinder = require('./db/GameFinder');
 const rateLimit = require('./security/rateLimit');
 const { sanitizeNickname, sanitizeAction, sanitizePartyCode } = require('./security/sanitize');
 const PartyService = require('./lobby/PartyService');
-const { buildCharacter, publicCatalog, hudPayload } = require('./character/CharacterService');
+const { buildCharacter, previewCharacter, publicCatalog, hudPayload } = require('./character/CharacterService');
 const GameSessionService = require('./game/GameSessionService');
+const DiscordAuthService = require('./auth/DiscordAuthService');
+const authSession = require('./auth/session');
 
 function clientIp(socket) {
   const forwarded = socket.handshake.headers['x-forwarded-for'];
@@ -22,6 +24,14 @@ function clientIp(socket) {
     return forwarded.split(',')[0].trim();
   }
   return socket.handshake.address || 'unknown';
+}
+
+function clientIpFromReq(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.length) {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.ip || req.socket?.remoteAddress || 'unknown';
 }
 
 function payloadTooLarge(data) {
@@ -43,6 +53,14 @@ async function bootstrap() {
   const app = express();
   app.set('trust proxy', 1);
 
+  const discordAuth = new DiscordAuthService();
+  if (!discordAuth.isConfigured()) {
+    console.warn('[auth] Discord OAuth NÃO configurado (defina DISCORD_CLIENT_ID/SECRET/SERVER_ID). Login indisponível.');
+  }
+  if (!config.session.secret) {
+    console.warn('[auth] SESSION_SECRET ausente — sessões desabilitadas até definir.');
+  }
+
   app.use(helmet({
     contentSecurityPolicy: {
       useDefaults: true,
@@ -51,7 +69,7 @@ async function bootstrap() {
         'script-src': ["'self'"],
         'style-src': ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
         'font-src': ["'self'", 'https://fonts.gstatic.com', 'data:'],
-        'img-src': ["'self'", 'data:'],
+        'img-src': ["'self'", 'data:', 'https://cdn.discordapp.com'],
         'connect-src': ["'self'", 'wss:', 'ws:'],
         'object-src': ["'none'"],
         'base-uri': ["'self'"],
@@ -79,10 +97,118 @@ async function bootstrap() {
     res.json(publicCatalog());
   });
 
+  function sanitizeDisplayName(raw) {
+    return String(raw || 'Aventureiro')
+      .replace(/[\u0000-\u001f<>]/g, '')
+      .trim()
+      .slice(0, 64) || 'Aventureiro';
+  }
+
+  app.get('/auth/status', (req, res) => {
+    const sess = config.session.secret ? authSession.readSession(req) : null;
+    res.json({
+      configured: discordAuth.isConfigured() && Boolean(config.session.secret),
+      authenticated: Boolean(sess?.uid),
+    });
+  });
+
+  app.get('/api/me', (req, res) => {
+    const sess = authSession.readSession(req);
+    if (!sess?.uid) return res.status(401).json({ ok: false, error: 'Não autenticado.' });
+    res.json({
+      ok: true,
+      player: { id: sess.uid, nickname: sess.nick, avatar: sess.av || null, discordId: sess.did },
+    });
+  });
+
+  app.get('/auth/discord/login', (req, res) => {
+    if (!discordAuth.isConfigured() || !config.session.secret) {
+      return res.redirect('/?auth=disabled');
+    }
+    if (!rateLimit.hit(`oauth:${clientIpFromReq(req)}`, 20, 60000)) {
+      return res.redirect('/?auth=ratelimited');
+    }
+    const state = crypto.randomBytes(16).toString('hex');
+    authSession.setStateCookie(res, state);
+    res.redirect(discordAuth.buildAuthUrl(state));
+  });
+
+  app.get('/auth/discord/callback', async (req, res) => {
+    if (!discordAuth.isConfigured() || !config.session.secret) {
+      return res.redirect('/?auth=disabled');
+    }
+    try {
+      const { code, state } = req.query;
+      const cookies = authSession.parseCookies(req.headers.cookie);
+      const savedState = cookies[config.session.stateCookie];
+      authSession.clearStateCookie(res);
+
+      if (!code || !state || !savedState || String(state) !== String(savedState)) {
+        return res.redirect('/?auth=state');
+      }
+
+      const tokens = await discordAuth.exchangeCode(String(code));
+      const accessToken = tokens.access_token;
+      if (!accessToken) return res.redirect('/?auth=token');
+
+      const isMember = await discordAuth.isGuildMember(accessToken);
+      if (!isMember) return res.redirect('/?auth=denied');
+
+      const user = await discordAuth.fetchUser(accessToken);
+      const existing = await GameFinder.findPlayerByDiscordId(user.id).catch(() => null);
+      const nickname = sanitizeDisplayName(user.global_name || user.username);
+      const avatarUrl = discordAuth.avatarUrl(user.id, user.avatar);
+
+      const player = {
+        id: existing?.id || uuidv4(),
+        discordId: user.id,
+        nickname,
+        globalName: user.global_name || null,
+        avatar: user.avatar || null,
+        token: crypto.randomBytes(24).toString('hex'),
+      };
+      await GameFinder.upsertPlayer(player).catch((err) => {
+        console.error('[auth] upsertPlayer falhou:', err.message);
+      });
+
+      authSession.setSession(res, { uid: player.id, did: user.id, nick: nickname, av: avatarUrl });
+      res.redirect('/');
+    } catch (err) {
+      console.error('[auth] callback erro:', err.message);
+      res.redirect('/?auth=error');
+    }
+  });
+
+  app.get('/auth/logout', (_req, res) => {
+    authSession.clearSession(res);
+    res.redirect('/');
+  });
+  app.post('/auth/logout', (_req, res) => {
+    authSession.clearSession(res);
+    res.json({ ok: true });
+  });
+
   const server = http.createServer(app);
   const io = new Server(server, {
     cors: { origin: config.corsOrigin, methods: ['GET', 'POST'] },
     maxHttpBufferSize: config.limits.payloadMaxBytes,
+  });
+
+  io.use((socket, next) => {
+    try {
+      if (!config.session.secret) return next(new Error('auth_unavailable'));
+      const sess = authSession.readSessionFromHeader(socket.handshake.headers.cookie);
+      if (!sess?.uid) return next(new Error('unauthorized'));
+      socket.data.identity = {
+        id: sess.uid,
+        discordId: sess.did || null,
+        nickname: sess.nick || 'Aventureiro',
+        avatar: sess.av || null,
+      };
+      return next();
+    } catch {
+      return next(new Error('unauthorized'));
+    }
   });
 
   const parties = new PartyService();
@@ -109,44 +235,68 @@ async function bootstrap() {
         world,
         party: partyHud,
         hud: hudPayload(char),
+        turn: games.turnPayload(session),
       });
     }
   }
 
+  function emitTurn(session) {
+    io.to(`party:${session.partyId}`).emit('turn:update', games.turnPayload(session));
+  }
+
+  function emitSegment(partyId, segment) {
+    if (!segment) return;
+    io.to(`party:${partyId}`).emit('narrative:push', {
+      by: segment.by,
+      from: segment.name,
+      character: segment.by === 'player' ? segment.name : null,
+      text: segment.narrative,
+      combat: segment.combat || [],
+      effects: segment.effects || [],
+    });
+  }
+
+  function endGame(party, session, outcome) {
+    session.outcome = outcome;
+    parties.endParty(party.id);
+    GameFinder.endParty(party.id).catch(() => {});
+    GameFinder.saveSession(session).catch(() => {});
+    io.to(`party:${party.id}`).emit('game:over', {
+      outcome,
+      turn: games.turnPayload(session),
+    });
+  }
+
   io.on('connection', (socket) => {
     const ip = clientIp(socket);
+    const identity = socket.data.identity;
+
+    const player = {
+      id: identity.id,
+      discordId: identity.discordId,
+      nickname: identity.nickname,
+      avatar: identity.avatar,
+      token: crypto.randomBytes(24).toString('hex'),
+      socketId: socket.id,
+      ip,
+    };
+    sockets.set(socket.id, player);
+    socket.join('lobby');
+    GameFinder.upsertPlayer(player).catch(() => {});
+
+    parties.setSocket(player.id, socket.id);
+    const activeParty = parties.getByPlayer(player.id);
+    if (activeParty) socket.join(`party:${activeParty.id}`);
 
     socket.emit('meta', {
       online: io.engine.clientsCount,
       catalog: publicCatalog(),
       gemini: Boolean(config.gemini.apiKey),
     });
-
-    socket.on('auth:join', async (data, cb) => {
-      const reply = typeof cb === 'function' ? cb : () => {};
-      if (payloadTooLarge(data)) return reply({ ok: false, error: 'Payload grande.' });
-
-      const nickname = sanitizeNickname(data?.nickname);
-      if (!nickname) return reply({ ok: false, error: 'Nickname inválido.' });
-
-      if (!rateLimit.hit(`join:${ip}`, 10, 60000)) {
-        return reply({ ok: false, error: 'Muitas tentativas. Aguarde.' });
-      }
-
-      const player = {
-        id: uuidv4(),
-        nickname,
-        token: crypto.randomBytes(24).toString('hex'),
-        socketId: socket.id,
-        ip,
-      };
-      sockets.set(socket.id, player);
-      socket.join('lobby');
-      GameFinder.upsertPlayer(player).catch(() => {});
-
-      reply({ ok: true, player: { id: player.id, nickname: player.nickname, token: player.token } });
-      io.emit('meta', { online: io.engine.clientsCount });
+    socket.emit('auth:ok', {
+      player: { id: player.id, nickname: player.nickname, avatar: player.avatar },
     });
+    io.emit('meta', { online: io.engine.clientsCount });
 
     socket.on('party:create', (data, cb) => {
       const reply = typeof cb === 'function' ? cb : () => {};
@@ -225,6 +375,7 @@ async function bootstrap() {
           name,
           raceKey,
           classKey,
+          attrs: data?.attrs || null,
         });
         const snap = parties.setCharacter(player.id, character);
         reply({ ok: true, character: hudPayload(character), party: snap });
@@ -232,6 +383,23 @@ async function bootstrap() {
       } catch (err) {
         reply({ ok: false, error: err.message });
       }
+    });
+
+    socket.on('character:preview', (data, cb) => {
+      const reply = typeof cb === 'function' ? cb : () => {};
+      const player = sockets.get(socket.id);
+      if (!player) return reply({ ok: false, error: 'Não autenticado.' });
+      if (payloadTooLarge(data)) return reply({ ok: false, error: 'Payload grande.' });
+      if (!rateLimit.hit(`preview:${player.id}`, 60, 60000)) {
+        return reply({ ok: false, error: 'Muitas prévias. Aguarde.' });
+      }
+      const out = previewCharacter({
+        name: sanitizeNickname(data?.name) || player.nickname,
+        raceKey: String(data?.race || 'humano'),
+        classKey: String(data?.classKey || 'guerreiro'),
+        attrs: data?.attrs || null,
+      });
+      reply(out);
     });
 
     socket.on('party:ready', (data, cb) => {
@@ -250,8 +418,15 @@ async function bootstrap() {
             sessionId: session.id,
             world: games.publicWorld(session),
             party: games.partyHudList(session),
+            turn: games.turnPayload(session),
           });
           emitSessionToParty(session);
+
+          // Mestre (IA) sempre começa primeiro — turno de abertura automático.
+          const opening = games.openingTurn(session);
+          emitSegment(party.id, opening.segment);
+          emitSessionToParty(session);
+          emitTurn(session);
         }
       } catch (err) {
         reply({ ok: false, error: err.message });
@@ -271,23 +446,47 @@ async function bootstrap() {
 
       const party = parties.getByPlayer(player.id);
       if (!party?.sessionId) return reply({ ok: false, error: 'Sessão inativa.' });
+      if (party.status === 'ended') return reply({ ok: false, error: 'Esta partida já terminou.' });
       const session = games.get(party.sessionId);
       if (!session) return reply({ ok: false, error: 'Sessão não encontrada.' });
 
+      if (!games.isPlayersTurn(session, player.id)) {
+        return reply({ ok: false, error: 'Não é o seu turno.' });
+      }
+      if (session._busy) return reply({ ok: false, error: 'Ação em andamento, aguarde.' });
+      session._busy = true;
+
       try {
-        const result = await games.handleAction(session, player.id, text);
-        io.to(`party:${party.id}`).emit('narrative:push', {
-          from: player.nickname,
-          character: session.characters[player.id]?.name,
-          text: result.narrative,
-          combat: result.combat,
-        });
+        const result = await games.submitPlayerAction(session, player.id, text);
+        for (const seg of result.segments) emitSegment(party.id, seg);
         emitSessionToParty(session);
-        reply({ ok: true, result });
+        emitTurn(session);
+        if (result.outcome) endGame(party, session, result.outcome);
+        reply({ ok: true, result: { hud: result.hud, turn: result.turn, outcome: result.outcome } });
       } catch (err) {
         console.error('[action]', err);
         reply({ ok: false, error: err.message || 'Falha ao resolver ação.' });
+      } finally {
+        session._busy = false;
       }
+    });
+
+    socket.on('turn:skip', (_data, cb) => {
+      const reply = typeof cb === 'function' ? cb : () => {};
+      const player = sockets.get(socket.id);
+      if (!player) return reply({ ok: false, error: 'Não autenticado.' });
+      const party = parties.getByPlayer(player.id);
+      if (!party?.sessionId) return reply({ ok: false, error: 'Sessão inativa.' });
+      if (party.hostId !== player.id) return reply({ ok: false, error: 'Só o host pode pular o turno.' });
+      const session = games.get(party.sessionId);
+      if (!session) return reply({ ok: false, error: 'Sessão não encontrada.' });
+
+      const result = games.skipCurrent(session);
+      for (const seg of result.segments) emitSegment(party.id, seg);
+      emitSessionToParty(session);
+      emitTurn(session);
+      if (result.outcome) endGame(party, session, result.outcome);
+      reply({ ok: true, result: { turn: result.turn, outcome: result.outcome } });
     });
 
     socket.on('disconnect', () => {

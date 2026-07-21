@@ -1,23 +1,23 @@
 const { v4: uuidv4 } = require('uuid');
-const { RACES, CLASSES, WEAPONS, ATTRS, attrMod } = require('../rules/catalog');
+const { RACES, CLASSES, WEAPONS, ATTRS, ATTR_LABELS, attrMod } = require('../rules/catalog');
+const pointBuy = require('../rules/pointBuy');
 
-function defaultAttrs() {
-  return { FOR: 12, DES: 12, CON: 12, INT: 12, SAB: 12, CAR: 12 };
+function applyRaceBonus(attrs, race) {
+  const out = { ...attrs };
+  for (const [k, v] of Object.entries(race.bonus || {})) {
+    out[k] = (out[k] || pointBuy.BASE) + v;
+  }
+  return out;
 }
 
-function buildCharacter({ playerId, partyId, name, raceKey, classKey }) {
+function buildCharacter({ playerId, partyId, name, raceKey, classKey, attrs: rawAttrs }) {
   const race = RACES[raceKey] || RACES.humano;
   const klass = CLASSES[classKey] || CLASSES.guerreiro;
-  const attrs = defaultAttrs();
-  for (const [k, v] of Object.entries(race.bonus || {})) {
-    attrs[k] = (attrs[k] || 10) + v;
-  }
 
-  // leve ajuste por classe
-  if (classKey === 'guerreiro') attrs.FOR += 2;
-  if (classKey === 'ladino') attrs.DES += 2;
-  if (classKey === 'clerigo') attrs.SAB += 2;
-  if (classKey === 'arcanista') attrs.INT += 2;
+  // Distribuição pré-racial: usa a enviada pelo cliente (validada) ou o preset da classe.
+  const chosen = rawAttrs ? pointBuy.validate(rawAttrs) : { ok: true, attrs: pointBuy.presetFor(classKey) };
+  if (!chosen.ok) throw new Error(chosen.error || 'Atributos inválidos.');
+  const attrs = applyRaceBonus(chosen.attrs, race);
 
   const level = 1;
   const hpMax = klass.hitDie + attrMod(attrs.CON);
@@ -65,14 +65,38 @@ function classColor(classKey) {
 
 function publicCatalog() {
   return {
-    races: Object.entries(RACES).map(([key, v]) => ({ key, label: v.label })),
+    races: Object.entries(RACES).map(([key, v]) => ({ key, label: v.label, bonus: v.bonus || {} })),
     classes: Object.entries(CLASSES).map(([key, v]) => ({
       key,
       label: v.label,
       weapon: WEAPONS[v.weapon]?.label,
       spells: v.spells,
+      keyAttr: pointBuy.KEY_ATTR[key] || null,
+      preset: pointBuy.presetFor(key),
     })),
     attrs: ATTRS,
+    attrLabels: ATTR_LABELS,
+    pointBuy: pointBuy.publicConfig(),
+  };
+}
+
+function previewCharacter({ name, raceKey, classKey, attrs: rawAttrs }) {
+  const validation = rawAttrs ? pointBuy.validate(rawAttrs) : { ok: true, attrs: pointBuy.presetFor(classKey), spent: null, remaining: null };
+  if (!validation.ok) return { ok: false, error: validation.error };
+  const character = buildCharacter({
+    playerId: 'preview',
+    partyId: 'preview',
+    name: name || 'Herói',
+    raceKey,
+    classKey,
+    attrs: validation.attrs,
+  });
+  return {
+    ok: true,
+    hud: hudPayload(character),
+    spent: validation.spent,
+    remaining: validation.remaining,
+    finalAttrs: character.attrs,
   };
 }
 
@@ -117,6 +141,7 @@ function partyMemberPublic(member) {
 
 module.exports = {
   buildCharacter,
+  previewCharacter,
   publicCatalog,
   hudPayload,
   partyMemberPublic,

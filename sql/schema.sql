@@ -5,10 +5,14 @@ USE rpg_ot;
 
 CREATE TABLE IF NOT EXISTS players (
   id CHAR(36) NOT NULL PRIMARY KEY,
-  nickname VARCHAR(32) NOT NULL,
-  session_token CHAR(64) NOT NULL,
+  discord_id VARCHAR(32) NULL,
+  nickname VARCHAR(64) NOT NULL,
+  global_name VARCHAR(64) NULL,
+  avatar VARCHAR(128) NULL,
+  session_token CHAR(64) NULL,
+  last_login TIMESTAMP NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY uq_players_token (session_token),
+  UNIQUE KEY uq_players_discord (discord_id),
   INDEX idx_players_nickname (nickname)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -16,11 +20,15 @@ CREATE TABLE IF NOT EXISTS parties (
   id CHAR(36) NOT NULL PRIMARY KEY,
   code VARCHAR(8) NOT NULL,
   host_id CHAR(36) NOT NULL,
+  name VARCHAR(60) NULL,
   status ENUM('lobby','hall','active','ended') NOT NULL DEFAULT 'lobby',
   max_size TINYINT UNSIGNED NOT NULL DEFAULT 10,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  ended_at TIMESTAMP NULL,
   UNIQUE KEY uq_parties_code (code),
-  INDEX idx_parties_status (status)
+  INDEX idx_parties_status (status),
+  INDEX idx_parties_host (host_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS party_members (
@@ -81,3 +89,25 @@ CREATE TABLE IF NOT EXISTS gm_memory (
   summary_text TEXT NOT NULL,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =============================================================================
+-- Migrações evolutivas (idempotentes) para bases criadas antes do login Discord.
+-- MariaDB suporta ADD COLUMN / ADD INDEX ... IF NOT EXISTS.
+-- =============================================================================
+ALTER TABLE players
+  ADD COLUMN IF NOT EXISTS discord_id VARCHAR(32) NULL AFTER id,
+  ADD COLUMN IF NOT EXISTS global_name VARCHAR(64) NULL AFTER nickname,
+  ADD COLUMN IF NOT EXISTS avatar VARCHAR(128) NULL AFTER global_name,
+  ADD COLUMN IF NOT EXISTS last_login TIMESTAMP NULL AFTER session_token,
+  MODIFY COLUMN nickname VARCHAR(64) NOT NULL,
+  MODIFY COLUMN session_token CHAR(64) NULL;
+ALTER TABLE players ADD UNIQUE INDEX IF NOT EXISTS uq_players_discord (discord_id);
+
+ALTER TABLE parties
+  ADD COLUMN IF NOT EXISTS name VARCHAR(60) NULL AFTER host_id,
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  ADD COLUMN IF NOT EXISTS ended_at TIMESTAMP NULL;
+ALTER TABLE parties ADD INDEX IF NOT EXISTS idx_parties_host (host_id);
+
+-- world_state_json passa a guardar o snapshot COMPLETO da sessão
+-- (personagens, inimigos, turno, mundo) para permitir reidratação/reentrada.

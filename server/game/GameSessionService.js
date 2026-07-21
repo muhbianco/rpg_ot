@@ -98,7 +98,16 @@ class GameSessionService {
         tiles: buildTavernTiles(MAP_W, MAP_H),
       },
       log: [],
+      turn: null,
+      outcome: null,
       createdAt: Date.now(),
+    };
+
+    session.turn = {
+      order: ['gm', ...members.map((m) => m.playerId)],
+      index: 0,
+      round: 1,
+      current: 'gm',
     };
 
     party.status = 'active';
@@ -202,26 +211,167 @@ class GameSessionService {
     return ally || null;
   }
 
-  async handleAction(session, playerId, rawText) {
+  // ---------------------------------------------------------------------------
+  // Turnos: Mestre (IA) primeiro, depois cada player. Inimigos agem no turno do Mestre.
+  // ---------------------------------------------------------------------------
+
+  isIncapacitated(char) {
+    return !char || (char.status || []).includes('incapacitado') || char.hp <= 0;
+  }
+
+  isPlayersTurn(session, playerId) {
+    return Boolean(session.turn) && session.turn.current === playerId;
+  }
+
+  advanceTurn(session) {
+    const t = session.turn;
+    if (!t) return null;
+    const order = t.order || [];
+    for (let step = 0; step <= order.length; step += 1) {
+      t.index += 1;
+      if (t.index >= order.length) {
+        t.index = 0;
+        t.round += 1;
+      }
+      const id = order[t.index];
+      if (id === 'gm') {
+        t.current = 'gm';
+        return 'gm';
+      }
+      if (!this.isIncapacitated(session.characters[id])) {
+        t.current = id;
+        return id;
+      }
+    }
+    t.current = 'gm';
+    return 'gm';
+  }
+
+  checkOutcome(session) {
+    const enemiesAlive = session.enemies.some((e) => e.hp > 0);
+    const playersAlive = Object.values(session.characters).some((c) => !this.isIncapacitated(c));
+    if (!enemiesAlive) return 'victory';
+    if (!playersAlive) return 'defeat';
+    return null;
+  }
+
+  turnPayload(session) {
+    const t = session.turn || {};
+    const nameFor = (id) => (id === 'gm' ? 'Mestre' : session.characters[id]?.name || 'Jogador');
+    return {
+      current: t.current || null,
+      currentName: nameFor(t.current),
+      round: t.round || 1,
+      order: (t.order || []).map((id) => ({
+        id,
+        kind: id === 'gm' ? 'gm' : 'player',
+        name: nameFor(id),
+        down: id !== 'gm' && this.isIncapacitated(session.characters[id]),
+      })),
+      outcome: session.outcome || null,
+    };
+  }
+
+  runGmTurn(session, { intro = false } = {}) {
+    const combat = [];
+    const effects = [];
+    const livingEnemies = session.enemies.filter((e) => e.hp > 0);
+
+    if (!intro) {
+      for (const enemy of livingEnemies) {
+        const targets = Object.values(session.characters).filter((c) => !this.isIncapacitated(c));
+        if (!targets.length) break;
+        const target = targets.slice().sort((a, b) => a.hp / a.hpMax - b.hp / b.hpMax)[0];
+        const mercy = this.rules.mercyFor(target);
+        const atk = this.rules.resolveAttack(enemy, target, { isNpc: true, mercyMods: mercy.mods });
+        const downed = this.isIncapacitated(target);
+        combat.push({
+          summary: atk.hit
+            ? `${enemy.name} atinge ${target.name} (${atk.damage} de dano).${downed ? ` ${target.name} cai!` : ''}`
+            : `${enemy.name} avança sobre ${target.name}, mas erra.`,
+          outcome: atk.outcome,
+          damage: atk.damage || 0,
+        });
+        effects.push({ type: 'attack', attackerId: enemy.id, targetId: target.id, outcome: atk.outcome, damage: atk.damage || 0 });
+        if (downed) effects.push({ type: 'death', id: target.id });
+      }
+    }
+
+    this.syncEntities(session);
+
+    let narrative;
+    if (intro) {
+      narrative = livingEnemies.length
+        ? `A cena se abre na Taverna de Arton. ${livingEnemies.map((e) => e.name).join(', ')} encaram a party com hostilidade. Preparem-se.`
+        : 'A cena se abre na Taverna de Arton. O salão está tenso e silencioso.';
+    } else if (combat.some((c) => c.summary)) {
+      narrative = combat.map((c) => c.summary).filter(Boolean).join(' ');
+    } else {
+      narrative = livingEnemies.length ? 'Os inimigos recuam e observam, à espreita.' : 'Nenhum inimigo de pé.';
+    }
+
+    return { narrative, combat, effects };
+  }
+
+  openingTurn(session) {
+    const gm = this.runGmTurn(session, { intro: true });
+    session.outcome = this.checkOutcome(session);
+    if (!session.outcome) this.advanceTurn(session);
+    this.syncEntities(session);
+    GameFinder.saveSession(session).catch(() => {});
+    return {
+      segment: { by: 'gm', name: 'Mestre', ...gm },
+      turn: this.turnPayload(session),
+      outcome: session.outcome,
+    };
+  }
+
+  progressAfterActor(session) {
+    const segments = [];
+    session.outcome = this.checkOutcome(session);
+    if (session.outcome) return { segments, outcome: session.outcome };
+
+    const next = this.advanceTurn(session);
+    if (next === 'gm') {
+      const gm = this.runGmTurn(session);
+      segments.push({ by: 'gm', name: 'Mestre', ...gm });
+      session.outcome = this.checkOutcome(session);
+      if (!session.outcome) this.advanceTurn(session);
+    }
+    return { segments, outcome: session.outcome };
+  }
+
+  async submitPlayerAction(session, playerId, rawText) {
+    const playerSeg = await this.resolvePlayerAction(session, playerId, rawText);
+    const prog = this.progressAfterActor(session);
+    this.syncEntities(session);
+    GameFinder.saveSession(session).catch(() => {});
+    return {
+      segments: [playerSeg, ...prog.segments],
+      turn: this.turnPayload(session),
+      outcome: prog.outcome,
+      hud: hudPayload(session.characters[playerId]),
+    };
+  }
+
+  skipCurrent(session) {
+    const prog = this.progressAfterActor(session);
+    this.syncEntities(session);
+    GameFinder.saveSession(session).catch(() => {});
+    return {
+      segments: prog.segments,
+      turn: this.turnPayload(session),
+      outcome: prog.outcome,
+    };
+  }
+
+  async resolvePlayerAction(session, playerId, rawText) {
     const actor = session.characters[playerId];
     if (!actor) throw new Error('Personagem não encontrado.');
-    if (actor.status?.includes('incapacitado')) {
-      return {
-        narrative: `${actor.name} está incapacitado e não consegue agir. Um aliado precisa ajudá-lo.`,
-        effects: [],
-        combat: [],
-      };
-    }
 
     const memory = await GameFinder.getGmMemory(session.id).catch(() => '');
     const mercy = this.rules.mercyFor(actor);
-    const gmOut = await this.gm.narrate({
-      action: rawText,
-      actor,
-      session,
-      memory,
-      mercy,
-    });
+    const gmOut = await this.gm.narrate({ action: rawText, actor, session, memory, mercy });
 
     const combat = [];
     const effects = [];
@@ -230,39 +380,43 @@ class GameSessionService {
       const resolved = this.applyIntent(session, playerId, intent, mercy);
       if (resolved) {
         combat.push(resolved);
-        if (resolved.effect) effects.push(resolved.effect);
+        if (resolved.effects) effects.push(...resolved.effects);
       }
     }
 
-    // Se a IA não gerou intent de combate mas o texto claramente ataca, fallback
+    // Fallback: texto claramente ofensivo sem intent de combate (sem contra-ataque — inimigos agem no turno do Mestre)
     if (!combat.length && /atac|golpe|bater|ferir|lutar/i.test(rawText)) {
       const target = this.findTarget(session, null, playerId);
       if (target && target.kind !== 'player') {
-        const atk = this.rules.resolveAttack(actor, target, { mercyMods: null });
+        const atk = this.rules.resolveAttack(actor, target);
+        const downed = target.hp <= 0;
         combat.push({
           summary: atk.hit
-            ? `${actor.name} acerta ${target.name} (${atk.damage} de dano).`
+            ? `${actor.name} acerta ${target.name} (${atk.damage} de dano).${downed ? ` ${target.name} cai!` : ''}`
             : `${actor.name} erra o ataque contra ${target.name}.`,
-          ...atk,
+          outcome: atk.outcome,
+          damage: atk.damage || 0,
         });
-        // retaliação simples
-        if (target.hp > 0) {
-          const m2 = this.rules.mercyFor(actor);
-          const ret = this.rules.resolveAttack(target, actor, { isNpc: true, mercyMods: m2.mods });
-          combat.push({
-            summary: ret.hit
-              ? `${target.name} contra-ataca ${actor.name} (${ret.damage} de dano).`
-              : `${target.name} erra o contra-ataque.`,
-            ...ret,
-          });
-        }
+        effects.push({ type: 'attack', attackerId: actor.id, targetId: target.id, outcome: atk.outcome, damage: atk.damage || 0 });
+        if (downed) effects.push({ type: 'death', id: target.id });
       }
     }
 
     this.syncEntities(session);
     const narrative = this.composeNarrative(gmOut.narrative, combat, mercy);
 
-    const payload = {
+    session.log.push({ at: Date.now(), playerId, rawText, narrative });
+    if (session.log.length > 40) session.log.shift();
+
+    const summaryLine = `${actor.name}: ${rawText} → ${narrative.slice(0, 180)}`;
+    const newMem = `${memory}\n${summaryLine}`.slice(-4000);
+    GameFinder.saveGmMemory(session.id, newMem).catch(() => {});
+    GameFinder.logAction(session.id, playerId, rawText, { narrative, combat }).catch(() => {});
+
+    return {
+      by: 'player',
+      playerId,
+      name: actor.name,
       narrative,
       effects,
       combat: combat.map((c) => ({
@@ -271,22 +425,8 @@ class GameSessionService {
         damage: c.damage || 0,
         healed: c.healed || 0,
       })),
-      world: this.publicWorld(session),
-      party: this.partyHudList(session),
-      hud: hudPayload(actor),
       mercyScore: mercy.score,
     };
-
-    session.log.push({ at: Date.now(), playerId, rawText, narrative });
-    if (session.log.length > 40) session.log.shift();
-
-    const summaryLine = `${actor.name}: ${rawText} → ${narrative.slice(0, 180)}`;
-    const newMem = `${memory}\n${summaryLine}`.slice(-4000);
-    GameFinder.saveGmMemory(session.id, newMem).catch(() => {});
-    GameFinder.logAction(session.id, playerId, rawText, payload).catch(() => {});
-    GameFinder.saveSession(session).catch(() => {});
-
-    return payload;
   }
 
   applyIntent(session, playerId, intent, mercy) {
@@ -294,20 +434,21 @@ class GameSessionService {
     const type = intent.type || 'wait';
 
     if (type === 'move') {
-      const dx = Number(intent.dx || 0);
-      const dy = Number(intent.dy || 0);
-      const nx = Math.max(0, Math.min(session.mapW - 1, actor.x + (dx || (intent.x != null ? intent.x - actor.x : 0))));
-      const ny = Math.max(0, Math.min(session.mapH - 1, actor.y + (dy || (intent.y != null ? intent.y - actor.y : 0))));
+      const fromX = actor.x;
+      const fromY = actor.y;
       if (intent.x != null && intent.y != null) {
         actor.x = Math.max(0, Math.min(session.mapW - 1, Number(intent.x)));
         actor.y = Math.max(0, Math.min(session.mapH - 1, Number(intent.y)));
       } else {
-        actor.x = nx;
-        actor.y = ny;
+        const dx = Number(intent.dx || 0);
+        const dy = Number(intent.dy || 0);
+        actor.x = Math.max(0, Math.min(session.mapW - 1, actor.x + dx));
+        actor.y = Math.max(0, Math.min(session.mapH - 1, actor.y + dy));
       }
       return {
         summary: `${actor.name} se desloca.`,
-        effect: { type: 'move', id: actor.id, x: actor.x, y: actor.y },
+        outcome: 'ok',
+        effects: [{ type: 'move', id: actor.id, fromX, fromY, x: actor.x, y: actor.y }],
       };
     }
 
@@ -317,24 +458,16 @@ class GameSessionService {
         return { summary: `${actor.name} não encontra um alvo válido.`, outcome: 'fail' };
       }
       const atk = this.rules.resolveAttack(actor, target);
+      const downed = target.hp <= 0;
       const out = {
         summary: atk.hit
-          ? `${actor.name} acerta ${target.name}${atk.isCrit ? ' em cheio' : ''} (${atk.damage} de dano).`
+          ? `${actor.name} acerta ${target.name}${atk.isCrit ? ' em cheio' : ''} (${atk.damage} de dano).${downed ? ` ${target.name} cai!` : ''}`
           : `${actor.name} erra o golpe em ${target.name}.`,
-        ...atk,
+        outcome: atk.outcome,
+        damage: atk.damage || 0,
+        effects: [{ type: 'attack', attackerId: actor.id, targetId: target.id, outcome: atk.outcome, damage: atk.damage || 0 }],
       };
-      if (target.hp > 0 && atk.hit) {
-        const m2 = this.rules.mercyFor(actor);
-        if (!(m2.mods.preferOtherTargets && m2.score > 0.7 && Math.random() < 0.5)) {
-          const ret = this.rules.resolveAttack(target, actor, { isNpc: true, mercyMods: m2.mods });
-          out.retaliation = ret;
-          out.summary += ret.hit
-            ? ` ${target.name} revida (${ret.damage}).`
-            : ` ${target.name} tenta revidar e erra.`;
-        }
-      } else if (target.hp <= 0) {
-        out.summary += ` ${target.name} cai!`;
-      }
+      if (downed) out.effects.push({ type: 'death', id: target.id });
       return out;
     }
 
@@ -344,13 +477,26 @@ class GameSessionService {
       if (!target) target = actor;
       const res = this.rules.resolveSpell(actor, target, spellKey);
       if (!res.ok) return { summary: res.reason || 'Falha ao conjurar.', outcome: 'fail' };
+      const downed = target.kind === 'enemy' && target.hp <= 0;
+      const effects = [{
+        type: 'cast',
+        casterId: actor.id,
+        targetId: target.id,
+        spell: res.spell,
+        damage: res.damage || 0,
+        healed: res.healed || 0,
+      }];
+      if (downed) effects.push({ type: 'death', id: target.id });
       return {
         summary: res.healed
           ? `${actor.name} conjura ${res.spell} e recupera ${res.healed} PV de ${target.name}.`
           : res.damage
-            ? `${actor.name} conjura ${res.spell} em ${target.name} (${res.damage} de dano).`
+            ? `${actor.name} conjura ${res.spell} em ${target.name} (${res.damage} de dano).${downed ? ` ${target.name} cai!` : ''}`
             : `${actor.name} conjura ${res.spell}.`,
-        ...res,
+        outcome: 'ok',
+        damage: res.damage || 0,
+        healed: res.healed || 0,
+        effects,
       };
     }
 

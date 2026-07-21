@@ -148,6 +148,17 @@ class PartyService {
     return this.snapshot(party);
   }
 
+  endParty(partyId) {
+    const party = this.parties.get(partyId);
+    if (!party) return null;
+    party.status = 'ended';
+    for (const pid of party.members.keys()) {
+      if (this.playerParty.get(pid) === partyId) this.playerParty.delete(pid);
+    }
+    GameFinder.saveParty(party).catch(() => {});
+    return this.snapshot(party);
+  }
+
   allReady(party) {
     if (!party.members.size) return false;
     for (const m of party.members.values()) {

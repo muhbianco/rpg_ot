@@ -1,9 +1,26 @@
 require('dotenv').config();
 
+const publicUrl = (process.env.PUBLIC_URL || process.env.CORS_ORIGIN || 'https://rpgot.muhbianco.com.br').replace(/\/+$/, '');
+
 const config = {
   port: parseInt(process.env.PORT || '3000', 10),
   nodeEnv: process.env.NODE_ENV || 'production',
   corsOrigin: process.env.CORS_ORIGIN || 'https://rpgot.muhbianco.com.br',
+  publicUrl,
+  discord: {
+    clientId: process.env.DISCORD_CLIENT_ID || '',
+    clientSecret: process.env.DISCORD_CLIENT_SECRET || '',
+    serverId: process.env.DISCORD_SERVER_ID || '',
+    redirectUri: `${publicUrl}/auth/discord/callback`,
+    scope: 'identify guilds',
+    apiBase: 'https://discord.com/api',
+  },
+  session: {
+    secret: process.env.SESSION_SECRET || '',
+    cookieName: 'rpgot_sess',
+    stateCookie: 'rpgot_oauth',
+    ttlMs: 1000 * 60 * 60 * 24 * 7,
+  },
   db: {
     host: process.env.DB_HOST || 'host.docker.internal',
     port: parseInt(process.env.DB_PORT || '3306', 10),

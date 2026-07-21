@@ -20,13 +20,20 @@ services:
       NODE_ENV: production
       PORT: "3000"
       CORS_ORIGIN: https://rpgot.muhbianco.com.br
+      PUBLIC_URL: https://rpgot.muhbianco.com.br
       DB_HOST: host.docker.internal
       DB_PORT: "3306"
       DB_USER: root
-      DB_PASSWORD: "G!7mXy@9#bQz$$2NpVw&K"
+      DB_PASSWORD: ""
       DB_NAME: rpg_ot
       GEMINI_API_KEY: ""
       GEMINI_MODEL: gemini-2.5-pro
+      # Discord OAuth2 — login + gate por servidor
+      DISCORD_CLIENT_ID: "1374789601629180084"
+      DISCORD_SERVER_ID: "914612441797754930"
+      # Definir no Portainer (secrets): não versionar
+      DISCORD_CLIENT_SECRET: ""
+      SESSION_SECRET: ""
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
