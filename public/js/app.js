@@ -151,11 +151,14 @@
     });
 
     socket.on('narrative:push', (payload) => {
-      const who = payload.character || payload.from || 'Mestre';
+      const kind = payload.kind || (payload.by === 'player' ? 'intent' : 'result');
+      const who = kind === 'intent'
+        ? (payload.character || payload.from || 'Jogador')
+        : 'Mestre';
       const text = payload.text || '';
-      if (text) pushNarrative(who, text);
+      if (text) pushNarrative(who, text, kind === 'intent' ? 'player' : 'gm');
       (payload.combat || []).forEach((c) => {
-        if (c.summary && !text.includes(c.summary)) pushNarrative('Combate', c.summary);
+        if (c.summary && !text.includes(c.summary)) pushNarrative('Combate', c.summary, 'combat');
       });
       if (payload.effects && renderer) renderer.playEffects(payload.effects);
     });
@@ -224,7 +227,7 @@
               input.focus();
             }
           } else if (ent.kind === 'enemy') {
-            if (hint) hint.textContent = 'Selecionado: ' + ent.name + ' — atacar / usar habilidade';
+            if (hint) hint.textContent = 'Selecionado: ' + ent.name + ' — aproxime-se (melee) ou ataque à distância';
             if (input && !input.disabled) {
               input.value = 'Ataco ' + ent.name;
               input.focus();
@@ -235,6 +238,13 @@
         };
       }
     }
+  }
+
+  function endMyTurn() {
+    const input = $('#input-action');
+    if (input) input.value = 'Encerrar turno';
+    const form = $('#form-action');
+    if (form) form.requestSubmit();
   }
 
   function fillCatalog() {
@@ -647,24 +657,44 @@
         : 'Rodada ' + turn.round + ' · Turno: ' + turn.currentName;
       banner.classList.toggle('my-turn', !!(me && turn.current === me.id));
     }
+    const budgetEl = $('#turn-budget');
+    if (budgetEl) {
+      if (turn && me && turn.current === me.id && turn.budget && !turn.outcome) {
+        const parts = [];
+        parts.push(turn.budget.canMove ? 'Movimento disponível' : 'Movimento usado');
+        parts.push(turn.budget.canAct ? 'Ação disponível' : 'Ação usada');
+        budgetEl.textContent = parts.join(' · ') + ' · diga “encerrar turno” se quiser passar';
+      } else {
+        budgetEl.textContent = '';
+      }
+    }
     const myTurn = !!(turn && me && turn.current === me.id && !turn.outcome);
-    setActionEnabled(
-      myTurn,
-      myTurn ? 'O que você faz?' : (turn && turn.currentName ? 'Aguardando ' + turn.currentName + '...' : 'Aguarde o turno')
-    );
+    let placeholder = 'Aguarde o turno';
+    if (myTurn && turn.budget) {
+      if (turn.budget.canMove && turn.budget.canAct) placeholder = 'Mova-se e/ou aja (ataque, falar, habilidade…)';
+      else if (turn.budget.canMove) placeholder = 'Ainda pode se mover — ou encerre o turno';
+      else if (turn.budget.canAct) placeholder = 'Ainda pode agir — ou encerre o turno';
+      else placeholder = 'Encerrar turno';
+    } else if (turn && turn.currentName) {
+      placeholder = 'Aguardando ' + turn.currentName + '...';
+    }
+    setActionEnabled(myTurn, placeholder);
+    const endBtn = $('#btn-end-turn');
+    if (endBtn) endBtn.disabled = !myTurn;
+
     const ul = $('#party-hud');
     if (ul) {
       ul.querySelectorAll('li').forEach((li) => {
         li.classList.toggle('turn-active', li.dataset.playerId === (turn && turn.current));
       });
     }
-    // Re-render chips com disabled atualizado
     const skillsBox = $('#hud-skills');
     if (skillsBox && skillsBox.querySelectorAll('.skill-chip').length) {
       skillsBox.querySelectorAll('.skill-chip').forEach((btn) => {
         const cdText = btn.querySelector('.cd');
         const onCd = cdText && /Recarga/.test(cdText.textContent || '');
-        btn.disabled = !myTurn || onCd;
+        const canAct = !turn || !turn.budget || turn.budget.canAct !== false;
+        btn.disabled = !myTurn || onCd || !canAct;
       });
     }
   }
@@ -679,11 +709,11 @@
     if (btn) btn.disabled = !enabled;
   }
 
-  function pushNarrative(who, text) {
+  function pushNarrative(who, text, roleHint) {
     const log = $('#narrative-log');
     if (!log) return;
     const div = document.createElement('div');
-    const role = narrativeRole(who);
+    const role = roleHint || narrativeRole(who);
     div.className = 'entry from-' + role;
     const whoEl = document.createElement('span');
     whoEl.className = 'who';
@@ -942,7 +972,8 @@
       const t = e.target.closest(
         '#btn-goto-games, #btn-games-back, #btn-recap-close, #btn-hall-back, #btn-game-lobby, ' +
         '#btn-create-party, #btn-leave-party, #btn-hall, #btn-ready, #btn-attr-reset, ' +
-        '#btn-skills, #btn-skills-close, [data-nav], [data-skill-dir]'
+        '#btn-skills, #btn-skills-close, #btn-end-turn, #btn-zoom-in, #btn-zoom-out, #btn-zoom-reset, ' +
+        '[data-nav], [data-skill-dir]'
       );
       if (!t) return;
 
@@ -973,6 +1004,42 @@
       if (nav === 'use-skill') {
         e.preventDefault();
         useSkill(t.getAttribute('data-skill-key'));
+        return;
+      }
+
+      if (t.id === 'btn-end-turn') {
+        e.preventDefault();
+        endMyTurn();
+        return;
+      }
+      if (t.id === 'btn-zoom-in') {
+        e.preventDefault();
+        ensureRenderer();
+        if (renderer) {
+          const z = renderer.zoomBy(0.15);
+          t.blur();
+          const reset = $('#btn-zoom-reset');
+          if (reset) reset.textContent = Math.round(z * 100) + '%';
+        }
+        return;
+      }
+      if (t.id === 'btn-zoom-out') {
+        e.preventDefault();
+        ensureRenderer();
+        if (renderer) {
+          const z = renderer.zoomBy(-0.15);
+          const reset = $('#btn-zoom-reset');
+          if (reset) reset.textContent = Math.round(z * 100) + '%';
+        }
+        return;
+      }
+      if (t.id === 'btn-zoom-reset') {
+        e.preventDefault();
+        ensureRenderer();
+        if (renderer) {
+          renderer.setZoom(1);
+          t.textContent = '100%';
+        }
         return;
       }
 

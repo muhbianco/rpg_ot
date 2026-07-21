@@ -62,12 +62,12 @@ const CLASSES = {
 };
 
 const WEAPONS = {
-  adaga: { label: 'Adaga', damageDice: '1d4', critRange: 19, critMult: 2, attr: 'DES' },
-  clava: { label: 'Clava', damageDice: '1d6', critRange: 20, critMult: 2, attr: 'FOR' },
-  espada_longa: { label: 'Espada Longa', damageDice: '1d8', critRange: 19, critMult: 2, attr: 'FOR' },
-  mangual: { label: 'Mangual', damageDice: '1d10', critRange: 20, critMult: 2, attr: 'FOR' },
-  machado_grande: { label: 'Machado Grande', damageDice: '1d12', critRange: 20, critMult: 3, attr: 'FOR' },
-  cajado: { label: 'Cajado', damageDice: '1d6', critRange: 20, critMult: 2, attr: 'FOR' },
+  adaga: { label: 'Adaga', damageDice: '1d4', critRange: 19, critMult: 2, attr: 'DES', range: 1, style: 'melee' },
+  clava: { label: 'Clava', damageDice: '1d6', critRange: 20, critMult: 2, attr: 'FOR', range: 1, style: 'melee' },
+  espada_longa: { label: 'Espada Longa', damageDice: '1d8', critRange: 19, critMult: 2, attr: 'FOR', range: 1, style: 'melee' },
+  mangual: { label: 'Mangual', damageDice: '1d10', critRange: 20, critMult: 2, attr: 'FOR', range: 1, style: 'melee' },
+  machado_grande: { label: 'Machado Grande', damageDice: '1d12', critRange: 20, critMult: 3, attr: 'FOR', range: 1, style: 'melee' },
+  cajado: { label: 'Cajado', damageDice: '1d6', critRange: 20, critMult: 2, attr: 'FOR', range: 1, style: 'melee' },
 };
 
 const SPELLS = {
@@ -77,6 +77,7 @@ const SPELLS = {
     damageDice: '1d4+1',
     type: 'force',
     autoHit: true,
+    range: 8,
   },
   bola_de_fogo: {
     label: 'Bola de Fogo',
@@ -85,17 +86,20 @@ const SPELLS = {
     type: 'fire',
     autoHit: false,
     saveAttr: 'DES',
+    range: 6,
   },
   cura_ferimentos: {
     label: 'Cura Ferimentos',
     cost: 2,
     healDice: '2d8+2',
     type: 'heal',
+    range: 1,
   },
   luz: {
     label: 'Luz',
     cost: 1,
     type: 'utility',
+    range: 0,
   },
 };
 
@@ -136,6 +140,18 @@ function attrMod(score) {
   return Math.floor((Number(score) - 10) / 2);
 }
 
+function chebyshev(a, b) {
+  if (!a || !b) return 99;
+  return Math.max(Math.abs((a.x || 0) - (b.x || 0)), Math.abs((a.y || 0) - (b.y || 0)));
+}
+
+function inRange(attacker, target, range) {
+  const r = Number(range);
+  if (!Number.isFinite(r) || r < 0) return true;
+  if (r === 0) return true; // self/utility
+  return chebyshev(attacker, target) <= r;
+}
+
 module.exports = {
   ATTRS,
   ATTR_LABELS,
@@ -145,4 +161,6 @@ module.exports = {
   SPELLS,
   ENEMY_TEMPLATES,
   attrMod,
+  chebyshev,
+  inRange,
 };

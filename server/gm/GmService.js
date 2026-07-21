@@ -18,7 +18,9 @@ Regras obrigatórias:
 - Liste novos NPCs em "npcs" quando entrarem na cena.
 - objectiveProgress: "none" | "partial" | "complete"
   - complete SOMENTE se o critério completeWhen da sala atual foi claramente atingido pela ação/narrativa.
-  - Não marque complete por combate genérico ou por o jogador só tentar algo.`;
+  - Não marque complete por combate genérico ou por o jogador só tentar algo.
+- Turno do jogador: movimento + 1 ação. Se a ação for inválida (magia/habilidade que não conhece, fora de alcance),
+  narre a falha e use intent "wait" — o servidor NÃO avançará o turno.`;
 
 const ADVENTURE_SEEDS = [
   {
@@ -127,6 +129,7 @@ class GmService {
     out.intents = intents;
     if (!out.objectiveProgress) out.objectiveProgress = 'none';
     if (!out.npcs) out.npcs = [];
+    if (blocked) out.invalidAttempt = true;
     return out;
   }
 

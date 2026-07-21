@@ -267,12 +267,14 @@ async function bootstrap() {
 
   function emitSegment(partyId, segment) {
     if (!segment) return;
+    const isPlayerIntent = segment.by === 'player' || segment.kind === 'intent';
     io.to(`party:${partyId}`).emit('narrative:push', {
-      by: segment.by,
-      from: segment.name,
-      character: segment.by === 'player' ? segment.name : null,
+      by: isPlayerIntent ? 'player' : 'gm',
+      kind: segment.kind || (isPlayerIntent ? 'intent' : 'result'),
+      from: isPlayerIntent ? segment.name : 'Mestre',
+      character: isPlayerIntent ? segment.name : null,
       text: segment.narrative,
-      combat: segment.combat || [],
+      combat: isPlayerIntent ? [] : (segment.combat || []),
       effects: segment.effects || [],
     });
   }

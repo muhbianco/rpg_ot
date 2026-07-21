@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/main.css?v=12" />
+  <link rel="stylesheet" href="/css/main.css?v=13" />
 </head>
 <body>
   <div id="app">
@@ -175,6 +175,7 @@
       </aside>
       <main class="stage">
         <div id="turn-banner" class="turn-banner">Aguardando turno...</div>
+        <p id="turn-budget" class="turn-budget muted tiny"></p>
         <div id="quest-banner" class="quest-banner">
           <strong id="quest-title">Aventura</strong>
           <span id="quest-room" class="muted tiny">Sala —</span>
@@ -184,10 +185,18 @@
         <form id="form-action" class="action-form" autocomplete="off">
           <input id="input-action" maxlength="400" placeholder="Descreva o que seu personagem faz na história..." required />
           <button type="submit" class="btn">AGIR</button>
+          <button type="button" id="btn-end-turn" class="btn ghost">ENCERRAR TURNO</button>
         </form>
         <p id="action-error" class="error"></p>
         <div class="scene-board">
-          <p class="scene-label muted tiny">Cena OT — clique em um NPC/inimigo para interagir</p>
+          <div class="scene-toolbar">
+            <p class="scene-label muted tiny">Cena OT — clique em um NPC/inimigo · zoom</p>
+            <div class="zoom-controls">
+              <button type="button" id="btn-zoom-out" class="btn ghost tiny" title="Zoom out">−</button>
+              <button type="button" id="btn-zoom-in" class="btn ghost tiny" title="Zoom in">+</button>
+              <button type="button" id="btn-zoom-reset" class="btn ghost tiny" title="Reset zoom">100%</button>
+            </div>
+          </div>
           <p id="scene-hint" class="scene-hint muted tiny"></p>
           <canvas id="game-canvas" width="960" height="560"></canvas>
         </div>
@@ -195,8 +204,8 @@
     </section>
   </div>
 
-  <script src="/js/socket.io.min.js?v=12"></script>
-  <script src="/js/game/renderer.js?v=12"></script>
-  <script src="/js/app.js?v=12"></script>
+  <script src="/js/socket.io.min.js?v=13"></script>
+  <script src="/js/game/renderer.js?v=13"></script>
+  <script src="/js/app.js?v=13"></script>
 </body>
 </html>

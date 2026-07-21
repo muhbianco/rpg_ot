@@ -44,13 +44,32 @@
       this.focusId = null;
       this.selectedId = null;
       this.shakeUntil = 0;
+      this.zoom = 1;
       this.raf = null;
       this.onSelect = null;
       this._tick = this._tick.bind(this);
       this._onClick = this._onClick.bind(this);
+      this._onWheel = this._onWheel.bind(this);
       canvas.addEventListener('click', this._onClick);
+      canvas.addEventListener('wheel', this._onWheel, { passive: false });
       canvas.style.cursor = 'pointer';
       this._startLoop();
+    }
+
+    setZoom(z) {
+      this.zoom = Math.max(0.55, Math.min(2.2, Number(z) || 1));
+      this._fitOrigin();
+      this.draw(performance.now());
+      return this.zoom;
+    }
+
+    zoomBy(delta) {
+      return this.setZoom(this.zoom + delta);
+    }
+
+    _onWheel(ev) {
+      ev.preventDefault();
+      this.zoomBy(ev.deltaY > 0 ? -0.1 : 0.1);
     }
 
     _startLoop() {
@@ -76,9 +95,22 @@
       if (!this.world) return;
       const mw = this.world.mapW || 12;
       const mh = this.world.mapH || 10;
-      const mid = iso(mw / 2, mh / 2);
+      const mid = this.iso(mw / 2, mh / 2);
       this.originX = this.canvas.width / 2 - mid.px * 0.15;
-      this.originY = Math.max(48, this.canvas.height * 0.12);
+      this.originY = Math.max(40, this.canvas.height * 0.1);
+    }
+
+    iso(x, y) {
+      const t = TILE * (this.zoom || 1);
+      return {
+        px: (x - y) * (t / 2),
+        py: (x + y) * (t / 4),
+      };
+    }
+
+    tileHalf() {
+      const t = TILE * (this.zoom || 1);
+      return { hw: t / 2, hh: t / 4 };
     }
 
     setFocus(entityId) {
@@ -86,7 +118,7 @@
     }
 
     screenPos(x, y) {
-      const { px, py } = iso(x, y);
+      const { px, py } = this.iso(x, y);
       return { ox: this.originX + px, oy: this.originY + py + 8 };
     }
 
@@ -248,11 +280,10 @@
 
     drawTile(x, y, type) {
       const { ctx } = this;
-      const { px, py } = iso(x, y);
+      const { px, py } = this.iso(x, y);
       const ox = this.originX + px;
       const oy = this.originY + py;
-      const hw = TILE / 2;
-      const hh = TILE / 4;
+      const { hw, hh } = this.tileHalf();
 
       ctx.beginPath();
       ctx.moveTo(ox, oy);

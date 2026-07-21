@@ -1,5 +1,5 @@
 const { v4: uuidv4 } = require('uuid');
-const { ENEMY_TEMPLATES } = require('../rules/catalog');
+const { ENEMY_TEMPLATES, WEAPONS, SPELLS, chebyshev, inRange } = require('../rules/catalog');
 const { scaleEncounter, applyScaleToEnemy } = require('../rules/EncounterScaler');
 const RulesEngine = require('../rules/RulesEngine');
 const { hudPayload } = require('../character/CharacterService');
@@ -365,10 +365,10 @@ class GameSessionService {
       const id = order[t.index];
       if (id === 'gm') {
         t.current = 'gm';
+        t.budget = null;
         return 'gm';
       }
       if (!this.isIncapacitated(session.characters[id])) {
-        // Início do turno do player: buffs "até próximo turno" caem
         const char = session.characters[id];
         if (char) {
           char.tempDefenseBonus = 0;
@@ -376,10 +376,12 @@ class GameSessionService {
           char.defense = char.baseDefense || char.defense;
         }
         t.current = id;
+        t.budget = { moved: false, acted: false };
         return id;
       }
     }
     t.current = 'gm';
+    t.budget = null;
     return 'gm';
   }
 
@@ -400,6 +402,7 @@ class GameSessionService {
   turnPayload(session) {
     const t = session.turn || {};
     const nameFor = (id) => (id === 'gm' ? 'Mestre' : session.characters[id]?.name || 'Jogador');
+    const budget = t.budget || null;
     return {
       current: t.current || null,
       currentName: nameFor(t.current),
@@ -411,7 +414,30 @@ class GameSessionService {
         down: id !== 'gm' && this.isIncapacitated(session.characters[id]),
       })),
       outcome: session.outcome || null,
+      budget: budget
+        ? {
+            moved: Boolean(budget.moved),
+            acted: Boolean(budget.acted),
+            canMove: !budget.moved,
+            canAct: !budget.acted,
+          }
+        : null,
     };
+  }
+
+  isExplicitEndTurn(rawText) {
+    return /encerrar\s*(o\s*)?turno|passo\s*(a\s*)?(a\s*)?vez|fim\s*(do\s*)?turno|não\s*(faço|quero)\s*mais|passo\s*a\s*vez|end\s*turn/i.test(
+      String(rawText || '')
+    );
+  }
+
+  skillRange(skillDef) {
+    if (!skillDef) return 1;
+    if (skillDef.range != null) return skillDef.range;
+    if (skillDef.type === 'buff_self') return 0;
+    if (skillDef.type === 'heal') return 1;
+    if (skillDef.type === 'auto_damage' || skillDef.type === 'damage_save') return 6;
+    return 1;
   }
 
   runGmTurn(session, { intro = false } = {}) {
@@ -425,13 +451,30 @@ class GameSessionService {
         const targets = Object.values(session.characters).filter((c) => !this.isIncapacitated(c));
         if (!targets.length) break;
         const target = targets.slice().sort((a, b) => a.hp / a.hpMax - b.hp / b.hpMax)[0];
+        const dist = chebyshev(enemy, target);
+        if (dist > 1) {
+          // aproxima-se (melee)
+          const fromX = enemy.x;
+          const fromY = enemy.y;
+          const stepX = Math.sign(target.x - enemy.x);
+          const stepY = Math.sign(target.y - enemy.y);
+          enemy.x = Math.max(0, Math.min(session.mapW - 1, enemy.x + stepX));
+          enemy.y = Math.max(0, Math.min(session.mapH - 1, enemy.y + stepY));
+          effects.push({ type: 'move', id: enemy.id, fromX, fromY, x: enemy.x, y: enemy.y });
+          combat.push({
+            summary: `${enemy.name} avança em direção a ${target.name}.`,
+            outcome: 'ok',
+            damage: 0,
+          });
+          if (chebyshev(enemy, target) > 1) continue;
+        }
         const mercy = this.rules.mercyFor(target);
         const atk = this.rules.resolveAttack(enemy, target, { isNpc: true, mercyMods: mercy.mods });
         const downed = this.isIncapacitated(target);
         combat.push({
           summary: atk.hit
             ? `${enemy.name} atinge ${target.name} (${atk.damage} de dano).${downed ? ` ${target.name} cai!` : ''}`
-            : `${enemy.name} avança sobre ${target.name}, mas erra.`,
+            : `${enemy.name} tenta golpear ${target.name}, mas erra.`,
           outcome: atk.outcome,
           damage: atk.damage || 0,
         });
@@ -611,17 +654,30 @@ class GameSessionService {
   }
 
   async submitPlayerAction(session, playerId, rawText) {
-    const playerSeg = await this.resolvePlayerAction(session, playerId, rawText);
-    const segments = [playerSeg];
+    const result = await this.resolvePlayerAction(session, playerId, rawText);
+    const segments = result.segments || [];
 
-    const advance = this.tryAdvanceRoom(session, playerSeg.objectiveProgress);
+    // Tentativa inválida (magia que não conhece, fora de alcance, etc.): não gasta turno.
+    if (!result.turnConsumed) {
+      this.syncEntities(session);
+      GameFinder.saveSession(session).catch(() => {});
+      return {
+        segments,
+        turn: this.turnPayload(session),
+        outcome: null,
+        hud: hudPayload(session.characters[playerId]),
+        quest: questPayload(session.campaign),
+      };
+    }
+
+    const advance = this.tryAdvanceRoom(session, result.objectiveProgress);
     if (advance.segment) segments.push(advance.segment);
 
     let outcome = null;
     if (advance.finished) {
       session.outcome = 'victory';
       outcome = 'victory';
-    } else {
+    } else if (result.endTurn) {
       const prog = this.progressAfterActor(session);
       segments.push(...prog.segments);
       outcome = prog.outcome;
@@ -654,6 +710,31 @@ class GameSessionService {
     } else if (skillDef.type !== 'buff_self') {
       target = this.findTarget(session, targetHint || null, playerId);
       if (!target || target.kind === 'player') throw new Error('Escolha um inimigo válido.');
+    }
+
+    const playerSeg = {
+      by: 'player',
+      kind: 'intent',
+      playerId,
+      name: actor.name,
+      narrative: `Usa ${skillDef.label}`,
+      effects: [],
+      combat: [],
+    };
+
+    // Habilidade = ação do turno
+    if (!session.turn) session.turn = {};
+    if (!session.turn.budget) session.turn.budget = { moved: false, acted: false };
+    if (session.turn.budget.acted) {
+      throw new Error('Você já usou a ação deste turno.');
+    }
+
+    // Alcance
+    if (target && skillDef.type !== 'buff_self') {
+      const range = this.skillRange(skillDef);
+      if (!inRange(actor, target, range)) {
+        throw new Error(`Alvo fora de alcance (distância ${chebyshev(actor, target)}, alcance ${range}).`);
+      }
     }
 
     const res = this.rules.resolveSkill(actor, target, skillKey, skillDef, rank);
@@ -702,30 +783,39 @@ class GameSessionService {
       healed: res.healed || 0,
     });
 
+    session.turn.budget.acted = true;
     this.syncEntities(session);
-    const narrative = summary;
-    session.log.push({ at: Date.now(), playerId, rawText: `[skill:${skillKey}]`, narrative });
+    session.log.push({ at: Date.now(), playerId, rawText: `[skill:${skillKey}]`, narrative: summary });
     if (session.log.length > 40) session.log.shift();
-    GameFinder.logAction(session.id, playerId, `[skill:${skillKey}]`, { narrative, combat }).catch(() => {});
+    GameFinder.logAction(session.id, playerId, `[skill:${skillKey}]`, { narrative: summary, combat }).catch(() => {});
 
-    const playerSeg = {
-      by: 'player',
-      playerId,
-      name: actor.name,
-      narrative,
+    const gmSeg = {
+      by: 'gm',
+      kind: 'result',
+      name: 'Mestre',
+      narrative: summary,
       effects,
       combat,
     };
 
-    const prog = this.progressAfterActor(session);
+    const segments = [playerSeg, gmSeg];
+    const shouldEnd = session.turn.budget.moved && session.turn.budget.acted;
+    let outcome = null;
+    if (shouldEnd) {
+      const prog = this.progressAfterActor(session);
+      segments.push(...prog.segments);
+      outcome = prog.outcome;
+    }
+
     this.syncEntities(session);
     GameFinder.saveSession(session).catch(() => {});
 
     return {
-      segments: [playerSeg, ...prog.segments],
+      segments,
       turn: this.turnPayload(session),
-      outcome: prog.outcome,
+      outcome,
       hud: hudPayload(session.characters[playerId]),
+      quest: questPayload(session.campaign),
     };
   }
 
@@ -744,14 +834,53 @@ class GameSessionService {
     const actor = session.characters[playerId];
     if (!actor) throw new Error('Personagem não encontrado.');
 
+    if (!session.turn) session.turn = {};
+    if (!session.turn.budget || session.turn.current !== playerId) {
+      session.turn.budget = { moved: false, acted: false };
+    }
+    const budget = session.turn.budget;
+
+    const intentSeg = {
+      by: 'player',
+      kind: 'intent',
+      playerId,
+      name: actor.name,
+      narrative: rawText,
+      effects: [],
+      combat: [],
+    };
+
+    if (this.isExplicitEndTurn(rawText)) {
+      budget.moved = true;
+      budget.acted = true;
+      return {
+        segments: [
+          intentSeg,
+          {
+            by: 'gm',
+            kind: 'result',
+            name: 'Mestre',
+            narrative: `${actor.name} encerra o turno.`,
+            effects: [],
+            combat: [],
+          },
+        ],
+        turnConsumed: true,
+        endTurn: true,
+        objectiveProgress: 'none',
+      };
+    }
+
     const memory = await GameFinder.getGmMemory(session.id).catch(() => '');
     const mercy = this.rules.mercyFor(actor);
     const gmOut = await this.gm.narrate({ action: rawText, actor, session, memory, mercy });
 
     const combat = [];
     const effects = [];
+    let usedMove = false;
+    let usedAction = false;
+    let invalidAttempt = Boolean(gmOut.invalidAttempt);
 
-    // NPCs sugeridos pelo mestre entram no tabuleiro
     if (Array.isArray(gmOut.npcs) && gmOut.npcs.length) {
       const added = upsertNpcs(session, gmOut.npcs);
       for (const n of added) {
@@ -759,7 +888,6 @@ class GameSessionService {
       }
     }
 
-    // Se o jogador partiu para a luta e ainda não há encontro, inicia combate alinhado à aventura.
     const wantsFight = (gmOut.intents || []).some((i) =>
       i.type === 'attack' || i.type === 'cast' || i.type === 'skill'
     );
@@ -768,7 +896,6 @@ class GameSessionService {
       if (started.spawned) {
         const names = started.enemies.map((e) => e.name).join(', ');
         gmOut.narrative = `${gmOut.narrative || ''} Das sombras surge o confronto: ${names}!`.trim();
-        // Garante um alvo se o intent veio sem inimigo prévio
         for (const intent of gmOut.intents || []) {
           if ((intent.type === 'attack' || intent.type === 'cast' || intent.type === 'skill') && !intent.targetId) {
             intent.targetId = started.enemies[0]?.name || null;
@@ -778,33 +905,87 @@ class GameSessionService {
     }
 
     for (const intent of gmOut.intents || []) {
-      const resolved = this.applyIntent(session, playerId, intent, mercy);
-      if (resolved) {
-        combat.push(resolved);
-        if (resolved.effects) effects.push(...resolved.effects);
+      const type = intent.type || 'wait';
+
+      if (type === 'move') {
+        if (budget.moved || usedMove) {
+          invalidAttempt = true;
+          combat.push({ summary: `${actor.name} já se movimentou neste turno.`, outcome: 'fail' });
+          continue;
+        }
+        const resolved = this.applyIntent(session, playerId, intent, mercy);
+        if (resolved) {
+          if (resolved.outcome === 'fail' && resolved.invalid) invalidAttempt = true;
+          else {
+            usedMove = true;
+            combat.push(resolved);
+            if (resolved.effects) effects.push(...resolved.effects);
+          }
+        }
+        continue;
       }
+
+      if (type === 'attack' || type === 'cast' || type === 'skill' || type === 'use_item') {
+        if (budget.acted || usedAction) {
+          invalidAttempt = true;
+          combat.push({ summary: `${actor.name} já usou a ação deste turno.`, outcome: 'fail' });
+          continue;
+        }
+        const resolved = this.applyIntent(session, playerId, intent, mercy);
+        if (resolved) {
+          if (resolved.invalid || resolved.outcome === 'fail' && resolved.blockTurn === false) {
+            invalidAttempt = true;
+            if (resolved.summary) combat.push(resolved);
+            if (resolved.effects) effects.push(...resolved.effects);
+          } else if (resolved.outcome === 'fail' && resolved.invalid) {
+            invalidAttempt = true;
+            if (resolved.summary) combat.push(resolved);
+          } else {
+            usedAction = true;
+            combat.push(resolved);
+            if (resolved.effects) effects.push(...resolved.effects);
+          }
+        }
+        continue;
+      }
+
+      if (type === 'talk' || type === 'inspect') {
+        if (budget.acted || usedAction) {
+          // ainda permite narrar, mas não consome de novo
+          const resolved = this.applyIntent(session, playerId, intent, mercy);
+          if (resolved?.summary) combat.push(resolved);
+          continue;
+        }
+        const resolved = this.applyIntent(session, playerId, intent, mercy);
+        usedAction = true;
+        if (resolved) {
+          combat.push(resolved);
+          if (resolved.effects) effects.push(...resolved.effects);
+        }
+        continue;
+      }
+
+      // wait / outros: não consome sozinho
+      const resolved = this.applyIntent(session, playerId, intent, mercy);
+      if (resolved?.summary) combat.push(resolved);
     }
 
-    // Fallback: texto claramente ofensivo sem intent de combate (sem contra-ataque — inimigos agem no turno do Mestre)
-    if (!combat.length && /atac|golpe|bater|ferir|lutar/i.test(rawText)) {
-      const target = this.findTarget(session, null, playerId);
-      if (target && target.kind !== 'player') {
-        const atk = this.rules.resolveAttack(actor, target);
-        const downed = target.hp <= 0;
-        combat.push({
-          summary: atk.hit
-            ? `${actor.name} acerta ${target.name} (${atk.damage} de dano).${downed ? ` ${target.name} cai!` : ''}`
-            : `${actor.name} erra o ataque contra ${target.name}.`,
-          outcome: atk.outcome,
-          damage: atk.damage || 0,
-        });
-        effects.push({ type: 'attack', attackerId: actor.id, targetId: target.id, outcome: atk.outcome, damage: atk.damage || 0 });
-        if (downed) effects.push({ type: 'death', id: target.id });
-      }
-    }
+    // Se só pediu ataque/magia inválida e não sobrou ação válida
+    const hadValidPlay = usedMove || usedAction;
 
     this.syncEntities(session);
-    const narrative = this.composeNarrative(gmOut.narrative, combat, mercy);
+
+    // Narrativa do Mestre = consequência (sem repetir o texto cru do player)
+    let narrative = this.composeNarrative(gmOut.narrative, combat.filter((c) => c.summary && c.outcome !== 'fail'), mercy);
+    const failNotes = combat.filter((c) => c.summary && (c.invalid || c.outcome === 'fail')).map((c) => c.summary);
+    if (failNotes.length) {
+      narrative = [narrative, ...failNotes].filter(Boolean).join(' ');
+    }
+    if (invalidAttempt && !hadValidPlay) {
+      if (!/turno\s+continua|ainda pode|tente outra/i.test(narrative)) {
+        narrative = `${narrative} O turno de ${actor.name} continua — tente outra ação válida.`.trim();
+      }
+    }
 
     session.log.push({ at: Date.now(), playerId, rawText, narrative });
     if (session.log.length > 40) session.log.shift();
@@ -814,21 +995,48 @@ class GameSessionService {
     GameFinder.saveGmMemory(session.id, newMem).catch(() => {});
     GameFinder.logAction(session.id, playerId, rawText, { narrative, combat }).catch(() => {});
 
+    if (usedMove) budget.moved = true;
+    if (usedAction) budget.acted = true;
+
+    const objectiveProgress = gmOut.objectiveProgress || 'none';
+    const objectiveEndsTurn = usedAction && (objectiveProgress === 'complete') && /talk|inspect|wait/i.test(
+      (gmOut.intents || []).map((i) => i.type).join(',')
+    );
+
+    const turnConsumed = hadValidPlay || objectiveEndsTurn;
+    const endTurn = turnConsumed && (budget.moved && budget.acted || objectiveEndsTurn || (budget.acted && budget.moved));
+
+    // Ação válida parcial: turnConsumed true mas endTurn false (ainda pode mover ou agir)
+    // Se só moveu: endTurn false
+    // Se só agiu: endTurn false  
+    // Se moveu e agiu: endTurn true
+    const shouldEnd = Boolean(
+      objectiveEndsTurn
+      || (budget.moved && budget.acted)
+    );
+
     return {
-      by: 'player',
-      playerId,
-      name: actor.name,
-      narrative,
-      effects,
-      combat: combat.map((c) => ({
-        summary: c.summary,
-        outcome: c.outcome || (c.hit ? 'hit' : c.ok === false ? 'fail' : 'ok'),
-        damage: c.damage || 0,
-        healed: c.healed || 0,
-      })),
-      mercyScore: mercy.score,
-      objectiveProgress: gmOut.objectiveProgress || 'none',
+      segments: [
+        intentSeg,
+        {
+          by: 'gm',
+          kind: 'result',
+          name: 'Mestre',
+          narrative,
+          effects,
+          combat: combat.map((c) => ({
+            summary: c.summary,
+            outcome: c.outcome || 'ok',
+            damage: c.damage || 0,
+            healed: c.healed || 0,
+          })),
+        },
+      ],
+      turnConsumed: hadValidPlay || shouldEnd,
+      endTurn: shouldEnd,
+      objectiveProgress,
       objectiveNote: gmOut.objectiveNote || null,
+      mercyScore: mercy.score,
     };
   }
 
@@ -839,15 +1047,18 @@ class GameSessionService {
     if (type === 'move') {
       const fromX = actor.x;
       const fromY = actor.y;
+      let dx = Number(intent.dx || 0);
+      let dy = Number(intent.dy || 0);
       if (intent.x != null && intent.y != null) {
-        actor.x = Math.max(0, Math.min(session.mapW - 1, Number(intent.x)));
-        actor.y = Math.max(0, Math.min(session.mapH - 1, Number(intent.y)));
-      } else {
-        const dx = Number(intent.dx || 0);
-        const dy = Number(intent.dy || 0);
-        actor.x = Math.max(0, Math.min(session.mapW - 1, actor.x + dx));
-        actor.y = Math.max(0, Math.min(session.mapH - 1, actor.y + dy));
+        dx = Number(intent.x) - actor.x;
+        dy = Number(intent.y) - actor.y;
       }
+      // Limita a 1 passo por movimento de turno (grid OT)
+      dx = Math.max(-1, Math.min(1, dx));
+      dy = Math.max(-1, Math.min(1, dy));
+      if (!dx && !dy) dy = -1;
+      actor.x = Math.max(0, Math.min(session.mapW - 1, actor.x + dx));
+      actor.y = Math.max(0, Math.min(session.mapH - 1, actor.y + dy));
       return {
         summary: `${actor.name} se desloca.`,
         outcome: 'ok',
@@ -860,13 +1071,32 @@ class GameSessionService {
         return {
           summary: `${actor.name} se prepara para lutar, mas ainda não há inimigo em combate.`,
           outcome: 'fail',
+          invalid: true,
+          blockTurn: false,
         };
       }
       session.inCombat = true;
-      const target = this.findTarget(session, intent.targetId || intent.target, playerId);
+      let target = this.findTarget(session, intent.targetId || intent.target, playerId);
       if (!target || target.kind === 'player') {
-        return { summary: `${actor.name} não encontra um alvo válido.`, outcome: 'fail' };
+        target = session.enemies.find((e) => e.hp > 0) || null;
       }
+      if (!target || target.kind === 'player') {
+        return { summary: `${actor.name} não encontra um alvo válido.`, outcome: 'fail', invalid: true, blockTurn: false };
+      }
+
+      const weapon = WEAPONS[actor.weaponKey] || WEAPONS.clava;
+      const range = weapon.range != null ? weapon.range : 1;
+      if (!inRange(actor, target, range)) {
+        return {
+          summary:
+            `${actor.name} tenta atacar ${target.name}, mas está longe demais ` +
+            `(distância ${chebyshev(actor, target)}, alcance ${range}). Aproxime-se primeiro.`,
+          outcome: 'fail',
+          invalid: true,
+          blockTurn: false,
+        };
+      }
+
       const atk = this.rules.resolveAttack(actor, target);
       const downed = target.hp <= 0;
       const out = {
@@ -883,10 +1113,30 @@ class GameSessionService {
 
     if (type === 'cast') {
       const spellKey = intent.spellKey || intent.skillHint;
+      const spell = SPELLS[spellKey];
+      if (!spell || !(actor.spells || []).includes(spellKey)) {
+        return {
+          summary: `${actor.name} tenta conjurar algo que não conhece — a magia não responde.`,
+          outcome: 'fail',
+          invalid: true,
+          blockTurn: false,
+        };
+      }
       let target = this.findTarget(session, intent.targetId || intent.target || 'self', playerId);
       if (!target) target = actor;
+      const range = spell.range != null ? spell.range : 6;
+      if (target !== actor && !inRange(actor, target, range)) {
+        return {
+          summary: `${actor.name} tenta conjurar ${spell.label}, mas o alvo está fora de alcance.`,
+          outcome: 'fail',
+          invalid: true,
+          blockTurn: false,
+        };
+      }
       const res = this.rules.resolveSpell(actor, target, spellKey);
-      if (!res.ok) return { summary: res.reason || 'Falha ao conjurar.', outcome: 'fail' };
+      if (!res.ok) {
+        return { summary: res.reason || 'Falha ao conjurar.', outcome: 'fail', invalid: true, blockTurn: false };
+      }
       const downed = target.kind === 'enemy' && target.hp <= 0;
       const effects = [{
         type: 'cast',
@@ -915,16 +1165,43 @@ class GameSessionService {
       const rank = actor.skillRanks?.[skillKey] || 0;
       const skillDef = SKILLS[skillKey];
       if (!skillDef || rank <= 0) {
-        return { summary: `${actor.name} tenta uma habilidade que não conhece.`, outcome: 'fail' };
+        return {
+          summary: `${actor.name} tenta uma habilidade que não conhece.`,
+          outcome: 'fail',
+          invalid: true,
+          blockTurn: false,
+        };
       }
       let target = null;
       if (skillDef.type === 'heal') {
         target = this.findTarget(session, intent.targetId || intent.target || 'self', playerId) || actor;
       } else if (skillDef.type !== 'buff_self') {
         target = this.findTarget(session, intent.targetId || intent.target, playerId);
+        if (!target || target.kind === 'player') {
+          target = session.enemies.find((e) => e.hp > 0) || null;
+        }
+        if (!target) {
+          return {
+            summary: `${actor.name} não encontra alvo para ${skillDef.label}.`,
+            outcome: 'fail',
+            invalid: true,
+            blockTurn: false,
+          };
+        }
+        const range = this.skillRange(skillDef);
+        if (!inRange(actor, target, range)) {
+          return {
+            summary: `${actor.name} tenta ${skillDef.label}, mas está longe demais do alvo.`,
+            outcome: 'fail',
+            invalid: true,
+            blockTurn: false,
+          };
+        }
       }
       const res = this.rules.resolveSkill(actor, target, skillKey, skillDef, rank);
-      if (!res.ok) return { summary: res.reason || 'Falha na habilidade.', outcome: 'fail' };
+      if (!res.ok) {
+        return { summary: res.reason || 'Falha na habilidade.', outcome: 'fail', invalid: true, blockTurn: false };
+      }
       actor.defense = (actor.baseDefense || actor.defense) + (actor.tempDefenseBonus || 0);
       const downed = target && target.kind === 'enemy' && target.hp <= 0;
       const effects = [];
