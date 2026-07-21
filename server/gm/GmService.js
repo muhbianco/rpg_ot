@@ -70,8 +70,8 @@ class GmService {
       this.model = this.genAI.getGenerativeModel({
         model: this.modelName,
         generationConfig: {
-          temperature: 0.85,
-          maxOutputTokens: 1024,
+          temperature: 0.7,
+          maxOutputTokens: 2048,
           responseMimeType: 'application/json',
         },
       });
@@ -174,8 +174,8 @@ Schema JSON:
 
       const result = await this.model.generateContent(prompt);
       const text = result.response.text();
-      const parsed = JSON.parse(this.extractJson(text));
-      if (!parsed.intents) parsed.intents = [];
+      const parsed = this.parseModelJson(text);
+      if (!parsed.intents) parsed.intents = [{ type: 'wait' }];
       if (!parsed.narrative) parsed.narrative = 'O mestre descreve a cena em silêncio tenso.';
       return this.sanitizeForActor(actor, parsed);
     } catch (err) {
@@ -215,7 +215,7 @@ Responda APENAS JSON:
   "narrative": "3–6 frases vividas abrindo a cena. Sem números de combate. Convide a party a agir."
 }`;
       const result = await this.model.generateContent(prompt);
-      const parsed = JSON.parse(this.extractJson(result.response.text()));
+      const parsed = this.parseModelJson(result.response.text());
       return {
         narrative: parsed.narrative || `${adventure.hook}`,
         adventure: {
@@ -234,10 +234,58 @@ Responda APENAS JSON:
   }
 
   extractJson(text) {
-    const t = String(text || '').trim();
+    let t = String(text || '').trim();
+    t = t.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
     if (t.startsWith('{')) return t;
     const m = t.match(/\{[\s\S]*\}/);
-    return m ? m[0] : '{"narrative":"O mestre hesita.","intents":[{"type":"wait"}]}';
+    return m ? m[0] : '';
+  }
+
+  parseModelJson(text) {
+    const raw = this.extractJson(text);
+    if (!raw) throw new Error('Resposta sem JSON');
+
+    try {
+      return JSON.parse(raw);
+    } catch (e1) {
+      // Tenta fechar aspas/chaves truncadas
+      let fixed = raw
+        .replace(/,\s*([}\]])/g, '$1')
+        .replace(/[\u0000-\u001f]+/g, ' ');
+      if (!/"\s*$/.test(fixed) && (fixed.match(/"/g) || []).length % 2 === 1) {
+        fixed += '"';
+      }
+      const open = (fixed.match(/\{/g) || []).length;
+      const close = (fixed.match(/\}/g) || []).length;
+      if (open > close) fixed += '}'.repeat(open - close);
+
+      try {
+        return JSON.parse(fixed);
+      } catch (e2) {
+        const narrative = this.pullField(raw, 'narrative')
+          || this.pullField(text, 'narrative')
+          || String(text || '').replace(/[{}\[\]"]/g, ' ').trim().slice(0, 500);
+        if (!narrative) throw e1;
+        console.warn('[gm] JSON parcial recuperado via narrative');
+        return {
+          narrative,
+          intents: [{ type: 'wait' }],
+          title: this.pullField(raw, 'title') || undefined,
+          setting: this.pullField(raw, 'setting') || undefined,
+        };
+      }
+    }
+  }
+
+  pullField(text, field) {
+    const re = new RegExp(`"${field}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`, 'i');
+    const m = String(text || '').match(re);
+    if (!m) return null;
+    try {
+      return JSON.parse(`"${m[1]}"`);
+    } catch {
+      return m[1];
+    }
   }
 
   fallback(action, actor, session, mercy) {
@@ -295,11 +343,21 @@ Responda APENAS JSON:
         ? `${actor.name} nota um detalhe útil — uma pista clara na cena.`
         : `${actor.name} examina o entorno com cuidado.`;
       intents.push({ type: 'inspect' });
-    } else if (/falo|convers|digo|oi|olá/.test(lower)) {
-      narrative = `Palavras ecoam. Nem todos parecem dispostos a negociar.`;
+    } else if (/falo|convers|digo|oi|olá|respondo|declaro|chamo|nome/.test(lower) || action.trim().split(/\s+/).length <= 6) {
+      const adv = session.adventure;
+      const setting = adv?.setting || 'a cena';
+      narrative =
+        `${actor.name} responde: "${action.trim()}". ` +
+        `Em ${setting}, a presença parece absorver as palavras — o ar vibra, runas ou olhares se voltam para o grupo. ` +
+        `Algo mudou. O que fazem a seguir?`;
       intents.push({ type: 'talk', targetId: enemy?.name || null });
     } else {
-      narrative = `${actor.name} age: "${action}". A cena responde.`;
+      const adv = session.adventure;
+      narrative =
+        `${actor.name} age: "${action}". ` +
+        (adv
+          ? `Em ${adv.setting}, a trama de "${adv.title}" reage de forma sutil — um detalhe novo aparece, mas a tensão permanece.`
+          : 'A cena se rearrange em torno da ação.');
       intents.push({ type: 'wait' });
     }
 

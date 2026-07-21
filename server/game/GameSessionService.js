@@ -453,10 +453,19 @@ class GameSessionService {
     session.outcome = this.checkOutcome(session);
     if (session.outcome) return { segments, outcome: session.outcome };
 
-    const next = this.advanceTurn(session);
-    if (next === 'gm') {
+    let next = this.advanceTurn(session);
+
+    // Fora de combate: o mestre já narraram em resolvePlayerAction.
+    // Não emite o "A cena segue" genérico nem gasta um turno vazio do GM.
+    if (next === 'gm' && !session.inCombat) {
+      next = this.advanceTurn(session);
+    }
+
+    if (next === 'gm' && session.inCombat) {
       const gm = this.runGmTurn(session);
-      segments.push({ by: 'gm', name: 'Mestre', ...gm });
+      if (gm.narrative || (gm.combat && gm.combat.length)) {
+        segments.push({ by: 'gm', name: 'Mestre', ...gm });
+      }
       session.outcome = this.checkOutcome(session);
       if (!session.outcome) this.advanceTurn(session);
     }
