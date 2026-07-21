@@ -41,6 +41,9 @@
             <a href="/auth/logout" class="btn ghost tiny" id="btn-logout">Sair</a>
           </div>
         </header>
+        <div class="lobby-tabs">
+          <button type="button" class="btn secondary" id="btn-goto-games">MEUS JOGOS</button>
+        </div>
         <div class="party-actions">
           <button type="button" id="btn-create-party" class="btn">CRIAR PARTY</button>
           <form id="form-join" class="join-form">
@@ -53,17 +56,45 @@
           <ul id="party-members"></ul>
           <div class="row gap">
             <button type="button" id="btn-hall" class="btn">IR AO HALL</button>
-            <button type="button" id="btn-leave-party" class="btn ghost">Sair</button>
+            <button type="button" id="btn-leave-party" class="btn ghost">Sair da party</button>
           </div>
           <p id="party-error" class="error"></p>
         </div>
       </div>
     </section>
 
+    <section id="screen-games" class="screen hidden" aria-hidden="true">
+      <div class="panel hall">
+        <header class="row">
+          <div>
+            <p class="eyebrow">Histórico</p>
+            <h2>Meus jogos</h2>
+          </div>
+          <button type="button" id="btn-games-back" class="btn ghost tiny">Voltar</button>
+        </header>
+        <p class="muted">Partidas em andamento podem ser retomadas. Finalizadas mostram o recap.</p>
+        <ul id="games-list" class="games-list"></ul>
+        <p id="games-empty" class="muted hidden">Nenhum jogo ainda. Crie ou entre em uma party.</p>
+        <p id="games-error" class="error"></p>
+        <div id="recap-box" class="recap-box hidden">
+          <h3 id="recap-title">Recap</h3>
+          <p id="recap-meta" class="muted"></p>
+          <ul id="recap-chars"></ul>
+          <div id="recap-log" class="recap-log"></div>
+          <button type="button" id="btn-recap-close" class="btn ghost">Fechar recap</button>
+        </div>
+      </div>
+    </section>
+
     <section id="screen-hall" class="screen hidden" aria-hidden="true">
       <div class="panel hall">
-        <h2>Hall — monte seu personagem</h2>
-        <p class="muted">Tormenta20 · atributos e dados ficam no servidor. Você só vê HP, mana e status.</p>
+        <header class="row">
+          <div>
+            <h2>Hall — monte seu personagem</h2>
+            <p class="muted">Tormenta20 · atributos e dados ficam no servidor.</p>
+          </div>
+          <button type="button" id="btn-hall-back" class="btn ghost tiny">Voltar</button>
+        </header>
         <form id="form-char" class="char-form">
           <label>Nome <input id="char-name" maxlength="20" required /></label>
           <label>Raça
@@ -91,6 +122,10 @@
 
     <section id="screen-game" class="screen game hidden" aria-hidden="true">
       <aside class="hud">
+        <div class="hud-top">
+          <button type="button" id="btn-game-lobby" class="btn ghost tiny">Voltar ao lobby</button>
+          <a href="/auth/logout" class="btn ghost tiny">Sair</a>
+        </div>
         <h2 id="hud-name">—</h2>
         <p class="hud-class" id="hud-class">—</p>
         <div class="bar-wrap">
@@ -116,7 +151,7 @@
         <canvas id="game-canvas" width="720" height="480"></canvas>
         <div class="narrative" id="narrative-log"></div>
         <form id="form-action" class="action-form" autocomplete="off">
-          <input id="input-action" maxlength="400" placeholder="O que você faz? (ex: ataco o goblin, caminho para o norte, curo meus ferimentos)" required />
+          <input id="input-action" maxlength="400" placeholder="O que você faz?" required />
           <button type="submit" class="btn">AGIR</button>
         </form>
         <p id="action-error" class="error"></p>

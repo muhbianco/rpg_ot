@@ -1,7 +1,7 @@
 const { v4: uuidv4 } = require('uuid');
 const config = require('../config');
 const GameFinder = require('../db/GameFinder');
-const { partyMemberPublic } = require('../character/CharacterService');
+const { partyMemberPublic, RACES, CLASSES, WEAPONS } = require('../character/CharacterService');
 
 function partyCode() {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -12,11 +12,56 @@ function partyCode() {
   return code;
 }
 
+function classColor(classKey) {
+  return {
+    guerreiro: '#c45c2a',
+    ladino: '#4a8f6a',
+    clerigo: '#d4b84a',
+    arcanista: '#5a6ac8',
+  }[classKey] || '#aaaaaa';
+}
+
+function hydrateCharacterFromRow(row) {
+  if (!row) return null;
+  const raceKey = row.race;
+  const classKey = row.class_key;
+  const race = RACES[raceKey] || RACES.humano;
+  const klass = CLASSES[classKey] || CLASSES.guerreiro;
+  const weapon = WEAPONS[row.weapon_key] || WEAPONS.clava;
+  return {
+    id: row.id,
+    playerId: row.player_id,
+    partyId: row.party_id,
+    name: row.name,
+    race: raceKey,
+    raceLabel: race.label,
+    classKey,
+    classLabel: klass.label,
+    level: row.level,
+    attrs: row.attrs || {},
+    hp: row.hp,
+    hpMax: row.hp_max,
+    mp: row.mp,
+    mpMax: row.mp_max,
+    defense: row.defense,
+    weaponKey: row.weapon_key,
+    weaponLabel: weapon.label,
+    spells: [...(klass.spells || [])],
+    status: row.status || [],
+    inventory: row.inventory || [],
+    mercy: row.mercy || { deaths: 0, failStreak: 0, punishments: 0 },
+    x: 4,
+    y: 4,
+    color: classColor(classKey),
+    kind: 'player',
+  };
+}
+
 class PartyService {
   constructor() {
-    this.parties = new Map(); // id -> party
-    this.codeIndex = new Map(); // code -> id
-    this.playerParty = new Map(); // playerId -> partyId
+    this.parties = new Map();
+    this.codeIndex = new Map();
+    this.playerParty = new Map();
   }
 
   create(host) {
@@ -56,7 +101,7 @@ class PartyService {
     if (!party) throw new Error('Party não encontrada.');
     if (party.status === 'ended') throw new Error('Party encerrada.');
     if (party.members.size >= party.maxSize) throw new Error('Party cheia (máx. 10).');
-    if (party.status === 'active') throw new Error('Sessão já em andamento.');
+    if (party.status === 'active') throw new Error('Sessão já em andamento — use Meus Jogos para reentrar.');
 
     const prev = this.playerParty.get(player.id);
     if (prev && prev !== party.id) this.leave(player.id);
@@ -80,6 +125,13 @@ class PartyService {
     this.playerParty.delete(playerId);
     if (!party) return null;
 
+    // Em partida ativa, só desconecta (mantém membership para reentrada).
+    if (party.status === 'active') {
+      const m = party.members.get(playerId);
+      if (m) m.socketId = null;
+      return this.snapshot(party);
+    }
+
     party.members.delete(playerId);
     GameFinder.removePartyMember(partyId, playerId).catch(() => {});
 
@@ -87,6 +139,7 @@ class PartyService {
       this.parties.delete(partyId);
       this.codeIndex.delete(party.code);
       party.status = 'ended';
+      GameFinder.saveParty(party).catch(() => {});
       return null;
     }
 
@@ -111,6 +164,27 @@ class PartyService {
     if (!party) return;
     const m = party.members.get(playerId);
     if (m) m.socketId = socketId;
+  }
+
+  attachPlayer(partyId, player) {
+    const party = this.parties.get(partyId);
+    if (!party) throw new Error('Party não encontrada.');
+    if (!party.members.has(player.id)) throw new Error('Você não participa desta party.');
+    const prev = this.playerParty.get(player.id);
+    if (prev && prev !== partyId) {
+      const prevParty = this.parties.get(prev);
+      if (prevParty && prevParty.status !== 'active') this.leave(player.id);
+      else if (prevParty) {
+        const old = prevParty.members.get(player.id);
+        if (old) old.socketId = null;
+        if (this.playerParty.get(player.id) === prev) this.playerParty.delete(player.id);
+      }
+    }
+    this.playerParty.set(player.id, partyId);
+    const m = party.members.get(player.id);
+    m.nickname = player.nickname || m.nickname;
+    m.socketId = player.socketId;
+    return this.snapshot(party);
   }
 
   startHall(playerId) {
@@ -156,6 +230,42 @@ class PartyService {
       if (this.playerParty.get(pid) === partyId) this.playerParty.delete(pid);
     }
     GameFinder.saveParty(party).catch(() => {});
+    return this.snapshot(party);
+  }
+
+  async rehydrateFromDb(partyId, sessionId = null) {
+    if (this.parties.has(partyId)) return this.snapshot(this.parties.get(partyId));
+
+    const row = await GameFinder.loadPartyById(partyId);
+    if (!row) return null;
+
+    const membersRows = await GameFinder.loadPartyMembers(partyId);
+    const charRows = await GameFinder.loadCharactersByParty(partyId);
+    const charByPlayer = new Map(charRows.map((c) => [c.player_id, hydrateCharacterFromRow(c)]));
+
+    const party = {
+      id: row.id,
+      code: row.code,
+      hostId: row.host_id,
+      name: row.name || null,
+      status: row.status,
+      maxSize: row.max_size || config.limits.partyMax,
+      members: new Map(),
+      sessionId: sessionId || null,
+    };
+
+    for (const m of membersRows) {
+      party.members.set(m.player_id, {
+        playerId: m.player_id,
+        nickname: m.nickname,
+        ready: Boolean(m.ready),
+        character: charByPlayer.get(m.player_id) || null,
+        socketId: null,
+      });
+    }
+
+    this.parties.set(party.id, party);
+    this.codeIndex.set(party.code, party.id);
     return this.snapshot(party);
   }
 

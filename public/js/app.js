@@ -4,6 +4,7 @@
   const screens = {
     landing: $('#screen-landing'),
     party: $('#screen-party'),
+    games: $('#screen-games'),
     hall: $('#screen-hall'),
     game: $('#screen-game'),
   };
@@ -24,6 +25,13 @@
     token: 'Falha ao obter token do Discord.',
     error: 'Erro no login Discord. Tente novamente.',
     ratelimited: 'Muitas tentativas. Aguarde um momento.',
+  };
+
+  const CLASS_LABELS = {
+    guerreiro: 'Guerreiro',
+    ladino: 'Ladino',
+    clerigo: 'Clérigo',
+    arcanista: 'Arcanista',
   };
 
   function show(name) {
@@ -103,14 +111,11 @@
       party = snap;
       show('hall');
       renderHallMembers();
+      initAttrEditor();
     });
 
     socket.on('session:start', (payload) => {
-      show('game');
-      ensureRenderer();
-      if (payload.world) renderer.setWorld(payload.world);
-      renderPartyHud(payload.party || []);
-      if (payload.turn) applyTurn(payload.turn);
+      enterGame(payload);
       pushNarrative('Mestre', 'A sessão começa na Taverna de Arton. As tochas crepitam.');
     });
 
@@ -120,9 +125,13 @@
       if (payload.party) renderPartyHud(payload.party);
       if (payload.hud) renderHud(payload.hud);
       if (payload.turn) applyTurn(payload.turn);
+      highlightTurnActor(payload.turn);
     });
 
-    socket.on('turn:update', (turn) => applyTurn(turn));
+    socket.on('turn:update', (turn) => {
+      applyTurn(turn);
+      highlightTurnActor(turn);
+    });
 
     socket.on('narrative:push', (payload) => {
       const who = payload.character || payload.from || 'Mestre';
@@ -139,9 +148,30 @@
         : 'Derrota. A party caiu na Taverna de Arton.';
       pushNarrative('Mestre', msg);
       setActionEnabled(false, 'Partida encerrada');
+      if (payload.turn) applyTurn(payload.turn);
     });
 
     return socket;
+  }
+
+  function enterGame(payload) {
+    show('game');
+    ensureRenderer();
+    $('#narrative-log').replaceChildren();
+    if (payload.world) renderer.setWorld(payload.world);
+    renderPartyHud(payload.partyHud || payload.party || []);
+    if (payload.hud) renderHud(payload.hud);
+    if (payload.turn) applyTurn(payload.turn);
+    highlightTurnActor(payload.turn);
+    (payload.log || []).forEach((l) => pushNarrative(l.who || 'Log', l.text));
+  }
+
+  function highlightTurnActor(turn) {
+    if (!renderer || !turn) return;
+    const actorId = turn.current === 'gm' ? null : (
+      (renderer.world?.entities || []).find((e) => e.playerId === turn.current)?.id || null
+    );
+    renderer.setFocus(actorId);
   }
 
   function ensureRenderer() {
@@ -171,10 +201,14 @@
 
   function initAttrEditor() {
     const wrap = $('#attr-editor');
-    if (!wrap || !catalog?.pointBuy || attrState) return;
+    if (!wrap || !catalog?.pointBuy) return;
     const pb = catalog.pointBuy;
     const classKey = $('#char-class')?.value || 'guerreiro';
-    attrState = { ...(pb.presets[classKey] || pb.presets.guerreiro) };
+    if (!attrState) attrState = { ...(pb.presets[classKey] || pb.presets.guerreiro) };
+    if (wrap.childElementCount) {
+      renderAttrEditor();
+      return;
+    }
     wrap.replaceChildren();
     (catalog.attrs || []).forEach((key) => {
       const row = document.createElement('div');
@@ -302,11 +336,15 @@
   }
 
   function renderPartyHud(list) {
+    if (!list) return;
     const ul = $('#party-hud');
     ul.replaceChildren();
-    (list || []).forEach((p) => {
+    list.forEach((p) => {
       const li = document.createElement('li');
-      li.textContent = `${p.name} ${p.hpPct}%`;
+      li.dataset.playerId = p.playerId || '';
+      const mine = p.playerId === me?.id ? ' ★' : '';
+      li.textContent = `${p.name} ${p.hpPct}%${mine}`;
+      if (currentTurn?.current === p.playerId) li.classList.add('turn-active');
       ul.appendChild(li);
     });
   }
@@ -322,6 +360,9 @@
     }
     const myTurn = Boolean(turn && me && turn.current === me.id && !turn.outcome);
     setActionEnabled(myTurn, myTurn ? 'O que você faz?' : (turn?.currentName ? `Aguardando ${turn.currentName}...` : 'Aguarde o turno'));
+    $('#party-hud')?.querySelectorAll('li').forEach((li) => {
+      li.classList.toggle('turn-active', li.dataset.playerId === turn?.current);
+    });
   }
 
   function setActionEnabled(enabled, placeholder) {
@@ -343,6 +384,120 @@
     div.querySelector('.msg').textContent = text;
     log.appendChild(div);
     log.scrollTop = log.scrollHeight;
+  }
+
+  function statusLabel(status) {
+    return {
+      lobby: 'Lobby',
+      hall: 'Hall',
+      active: 'Em andamento',
+      ended: 'Finalizado',
+    }[status] || status;
+  }
+
+  function loadGames() {
+    $('#games-error').textContent = '';
+    socket.emit('games:list', {}, (res) => {
+      if (!res?.ok) {
+        $('#games-error').textContent = res?.error || 'Falha ao listar.';
+        return;
+      }
+      const list = $('#games-list');
+      list.replaceChildren();
+      const empty = $('#games-empty');
+      if (!res.games?.length) {
+        empty.classList.remove('hidden');
+        return;
+      }
+      empty.classList.add('hidden');
+      res.games.forEach((g) => {
+        const li = document.createElement('li');
+        li.className = 'game-item';
+        const cls = CLASS_LABELS[g.charClass] || g.charClass || '—';
+        const when = g.updatedAt ? new Date(g.updatedAt).toLocaleString('pt-BR') : '';
+        li.innerHTML = `
+          <div class="game-main">
+            <strong>${g.code}</strong>
+            <span class="pill status-${g.status}">${statusLabel(g.status)}</span>
+            <span class="muted">${g.charName || 'sem ficha'} · ${cls} · ${g.memberCount} jogadores</span>
+            <span class="muted tiny">${when}</span>
+          </div>
+          <div class="game-actions"></div>
+        `;
+        const actions = li.querySelector('.game-actions');
+        if (g.canRejoin || g.canResumeLobby) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'btn tiny';
+          btn.textContent = g.canRejoin ? 'Reentrar' : 'Retomar';
+          btn.addEventListener('click', () => rejoinGame(g.partyId));
+          actions.appendChild(btn);
+        }
+        if (g.status === 'ended' || g.sessionId) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'btn ghost tiny';
+          btn.textContent = 'Ver recap';
+          btn.addEventListener('click', () => loadRecap(g.partyId));
+          actions.appendChild(btn);
+        }
+        list.appendChild(li);
+      });
+    });
+  }
+
+  function rejoinGame(partyId) {
+    $('#games-error').textContent = '';
+    socket.emit('games:rejoin', { partyId }, (res) => {
+      if (!res?.ok) {
+        $('#games-error').textContent = res?.error || 'Falha ao reentrar.';
+        return;
+      }
+      party = res.party;
+      if (res.mode === 'active') {
+        enterGame(res);
+        pushNarrative('Sistema', 'Você reentrou na partida em andamento.');
+      } else if (res.mode === 'hall') {
+        show('hall');
+        renderHallMembers();
+        initAttrEditor();
+      } else {
+        show('party');
+        renderParty();
+      }
+    });
+  }
+
+  function loadRecap(partyId) {
+    $('#games-error').textContent = '';
+    socket.emit('games:recap', { partyId }, (res) => {
+      if (!res?.ok) {
+        $('#games-error').textContent = res?.error || 'Falha no recap.';
+        return;
+      }
+      const r = res.recap;
+      const box = $('#recap-box');
+      box.classList.remove('hidden');
+      $('#recap-title').textContent = `Recap · ${r.code || partyId.slice(0, 8)}`;
+      const outcome = r.outcome === 'victory' ? 'Vitória' : r.outcome === 'defeat' ? 'Derrota' : statusLabel(r.status);
+      $('#recap-meta').textContent = `${outcome}${r.endedAt ? ` · ${new Date(r.endedAt).toLocaleString('pt-BR')}` : ''}`;
+      const chars = $('#recap-chars');
+      chars.replaceChildren();
+      (r.characters || []).forEach((c) => {
+        const li = document.createElement('li');
+        li.textContent = `${c.name} (${c.class}) — HP ${c.hp}/${c.hpMax}`;
+        chars.appendChild(li);
+      });
+      const log = $('#recap-log');
+      log.replaceChildren();
+      const lines = (r.log && r.log.length ? r.log : r.actions) || [];
+      lines.forEach((l) => {
+        const div = document.createElement('div');
+        div.className = 'entry';
+        div.textContent = l.text;
+        log.appendChild(div);
+      });
+    });
   }
 
   async function boot() {
@@ -379,6 +534,29 @@
       $('#auth-error').textContent = 'Não foi possível verificar a sessão.';
     }
   }
+
+  $('#btn-goto-games')?.addEventListener('click', () => {
+    show('games');
+    $('#recap-box').classList.add('hidden');
+    loadGames();
+  });
+
+  $('#btn-games-back')?.addEventListener('click', () => show('party'));
+  $('#btn-recap-close')?.addEventListener('click', () => $('#recap-box').classList.add('hidden'));
+
+  $('#btn-hall-back')?.addEventListener('click', () => {
+    show('party');
+    renderParty();
+  });
+
+  $('#btn-game-lobby')?.addEventListener('click', () => {
+    socket.emit('party:leave', {}, () => {
+      party = null;
+      currentTurn = null;
+      show('party');
+      renderParty();
+    });
+  });
 
   $('#btn-create-party')?.addEventListener('click', () => {
     $('#party-error').textContent = '';

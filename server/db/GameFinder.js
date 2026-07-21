@@ -201,6 +201,33 @@ async function listPlayerGames(playerId) {
   return rows;
 }
 
+async function loadActionRecap(sessionId, limit = 30) {
+  const p = getPool();
+  const [rows] = await p.query(
+    `SELECT player_id AS playerId, raw_text AS rawText, resolved_json AS resolved, created_at AS createdAt
+       FROM action_log
+      WHERE session_id = ?
+      ORDER BY id DESC
+      LIMIT ?`,
+    [sessionId, limit]
+  );
+  return rows.map((r) => ({
+    playerId: r.playerId,
+    rawText: r.rawText,
+    resolved: parseJson(r.resolved, null),
+    createdAt: r.createdAt,
+  })).reverse();
+}
+
+async function isPartyMember(partyId, playerId) {
+  const p = getPool();
+  const [rows] = await p.query(
+    `SELECT 1 FROM party_members WHERE party_id = ? AND player_id = ? LIMIT 1`,
+    [partyId, playerId]
+  );
+  return Boolean(rows[0]);
+}
+
 async function logAction(sessionId, playerId, rawText, resolved) {
   const p = getPool();
   await p.query(
@@ -240,6 +267,8 @@ module.exports = {
   loadPartyMembers,
   loadCharactersByParty,
   listPlayerGames,
+  loadActionRecap,
+  isPartyMember,
   logAction,
   saveGmMemory,
   getGmMemory,

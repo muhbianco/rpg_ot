@@ -105,7 +105,60 @@ html, body {
 }
 .discord-icon { flex-shrink: 0; }
 .auth-error { max-width: 28rem; text-align: center; margin: 0 0 0.75rem; }
-.auth-hint { margin: 0 0 0.5rem; }
+.lobby-tabs { margin: 0.75rem 0 0.25rem; }
+.games-list {
+  list-style: none;
+  padding: 0;
+  margin: 1rem 0;
+  display: grid;
+  gap: 0.65rem;
+}
+.game-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+  border: 1px solid var(--line);
+  padding: 0.75rem;
+}
+.game-main {
+  display: grid;
+  gap: 0.25rem;
+}
+.game-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  justify-content: flex-end;
+}
+.pill.status-active { color: #5dca7a; border-color: rgba(93,202,122,0.4); }
+.pill.status-ended { color: var(--muted); }
+.pill.status-hall, .pill.status-lobby { color: var(--accent2); }
+.tiny { font-size: 0.8rem; }
+.recap-box {
+  margin-top: 1rem;
+  border-top: 1px solid var(--line);
+  padding-top: 1rem;
+}
+.recap-log {
+  max-height: 200px;
+  overflow-y: auto;
+  background: rgba(16, 12, 9, 0.9);
+  border: 1px solid var(--line);
+  padding: 0.75rem;
+  margin: 0.75rem 0;
+  font-size: 0.9rem;
+}
+.hud-top {
+  display: flex;
+  gap: 0.4rem;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+}
+#party-hud li.turn-active {
+  color: var(--accent2);
+  font-weight: 700;
+}
 .user-chip {
   display: flex;
   align-items: center;

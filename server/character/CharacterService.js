@@ -147,4 +147,5 @@ module.exports = {
   partyMemberPublic,
   RACES,
   CLASSES,
+  WEAPONS,
 };

@@ -341,6 +341,159 @@ async function bootstrap() {
       else if (partyId) io.to(`party:${partyId}`).emit('party:update', null);
     });
 
+    socket.on('games:list', async (_data, cb) => {
+      const reply = typeof cb === 'function' ? cb : () => {};
+      const player = sockets.get(socket.id);
+      if (!player) return reply({ ok: false, error: 'Não autenticado.' });
+      try {
+        const rows = await GameFinder.listPlayerGames(player.id);
+        const gamesList = rows.map((r) => ({
+          partyId: r.partyId,
+          code: r.code,
+          status: r.status,
+          hostId: r.hostId,
+          sessionId: r.sessionId || null,
+          memberCount: Number(r.memberCount || 0),
+          charName: r.charName || null,
+          charClass: r.charClass || null,
+          createdAt: r.createdAt,
+          updatedAt: r.sessionUpdatedAt || r.updatedAt || r.createdAt,
+          endedAt: r.endedAt || null,
+          canRejoin: r.status === 'active' && Boolean(r.sessionId),
+          canResumeLobby: r.status === 'lobby' || r.status === 'hall',
+        }));
+        reply({ ok: true, games: gamesList });
+      } catch (err) {
+        console.error('[games:list]', err.message);
+        reply({ ok: false, error: 'Falha ao listar jogos.' });
+      }
+    });
+
+    socket.on('games:rejoin', async (data, cb) => {
+      const reply = typeof cb === 'function' ? cb : () => {};
+      const player = sockets.get(socket.id);
+      if (!player) return reply({ ok: false, error: 'Não autenticado.' });
+      const partyId = String(data?.partyId || '');
+      if (!partyId) return reply({ ok: false, error: 'Party inválida.' });
+
+      try {
+        const member = await GameFinder.isPartyMember(partyId, player.id);
+        if (!member) return reply({ ok: false, error: 'Você não participa deste jogo.' });
+
+        let party = parties.get(partyId);
+        if (!party) {
+          await parties.rehydrateFromDb(partyId);
+          party = parties.get(partyId);
+        }
+        if (!party) return reply({ ok: false, error: 'Party não encontrada.' });
+
+        if (party.status === 'ended') {
+          return reply({ ok: false, error: 'Partida já finalizada. Use Ver recap.' });
+        }
+
+        // Lobby/hall: só reanexa
+        if (party.status === 'lobby' || party.status === 'hall') {
+          const prev = parties.getByPlayer(player.id);
+          if (prev?.id && prev.id !== partyId) socket.leave(`party:${prev.id}`);
+          const snap = parties.attachPlayer(partyId, player);
+          socket.join(`party:${partyId}`);
+          emitParty(snap);
+          return reply({
+            ok: true,
+            mode: party.status,
+            party: snap,
+          });
+        }
+
+        // Active session
+        let session = games.getByParty(partyId) || (party.sessionId ? games.get(party.sessionId) : null);
+        if (!session) {
+          session = await games.ensureLoaded(partyId);
+        }
+        if (!session) return reply({ ok: false, error: 'Sessão não encontrada no banco.' });
+        if (session.outcome) return reply({ ok: false, error: 'Partida já terminou.' });
+
+        party.sessionId = session.id;
+        party.status = 'active';
+
+        // Sincroniza personagem vivo da sessão no member
+        const liveChar = session.characters[player.id];
+        if (liveChar && party.members.has(player.id)) {
+          party.members.get(player.id).character = liveChar;
+        }
+
+        const prev = parties.getByPlayer(player.id);
+        if (prev?.id && prev.id !== partyId) socket.leave(`party:${prev.id}`);
+        const snap = parties.attachPlayer(partyId, player);
+        socket.join(`party:${partyId}`);
+
+        reply({
+          ok: true,
+          mode: 'active',
+          party: snap,
+          sessionId: session.id,
+          world: games.publicWorld(session),
+          partyHud: games.partyHudList(session),
+          hud: hudPayload(session.characters[player.id]),
+          turn: games.turnPayload(session),
+          log: (session.log || []).slice(-20).map((l) => ({
+            who: session.characters[l.playerId]?.name || 'Ação',
+            text: l.narrative || l.rawText,
+          })),
+        });
+        emitSessionToParty(session);
+        emitTurn(session);
+      } catch (err) {
+        console.error('[games:rejoin]', err);
+        reply({ ok: false, error: err.message || 'Falha ao reentrar.' });
+      }
+    });
+
+    socket.on('games:recap', async (data, cb) => {
+      const reply = typeof cb === 'function' ? cb : () => {};
+      const player = sockets.get(socket.id);
+      if (!player) return reply({ ok: false, error: 'Não autenticado.' });
+      const partyId = String(data?.partyId || '');
+      if (!partyId) return reply({ ok: false, error: 'Party inválida.' });
+
+      try {
+        const member = await GameFinder.isPartyMember(partyId, player.id);
+        if (!member) return reply({ ok: false, error: 'Você não participa deste jogo.' });
+
+        const partyRow = await GameFinder.loadPartyById(partyId);
+        const snap = await GameFinder.loadSessionByParty(partyId);
+        const actions = snap?.id ? await GameFinder.loadActionRecap(snap.id, 40) : [];
+
+        reply({
+          ok: true,
+          recap: {
+            partyId,
+            code: partyRow?.code || null,
+            status: partyRow?.status || 'ended',
+            outcome: snap?.outcome || null,
+            endedAt: partyRow?.ended_at || null,
+            characters: Object.values(snap?.characters || {}).map((c) => ({
+              name: c.name,
+              class: c.classLabel || c.classKey,
+              hp: c.hp,
+              hpMax: c.hpMax,
+            })),
+            log: (snap?.log || []).slice(-20).map((l) => ({
+              text: l.narrative || l.rawText,
+              at: l.at,
+            })),
+            actions: actions.map((a) => ({
+              text: a.resolved?.narrative || a.rawText,
+              at: a.createdAt,
+            })),
+          },
+        });
+      } catch (err) {
+        console.error('[games:recap]', err.message);
+        reply({ ok: false, error: 'Falha ao carregar recap.' });
+      }
+    });
+
     socket.on('party:start_hall', (_data, cb) => {
       const reply = typeof cb === 'function' ? cb : () => {};
       const player = sockets.get(socket.id);

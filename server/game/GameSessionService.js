@@ -135,6 +135,55 @@ class GameSessionService {
     return null;
   }
 
+  /** Reidrata sessão a partir do snapshot persistido em world_state_json. */
+  rehydrate(snapshot) {
+    if (!snapshot?.id) return null;
+    if (this.sessions.has(snapshot.id)) return this.sessions.get(snapshot.id);
+
+    const session = {
+      id: snapshot.id,
+      partyId: snapshot.partyId,
+      mapId: snapshot.mapId || 'taverna_arton',
+      mapW: snapshot.mapW || MAP_W,
+      mapH: snapshot.mapH || MAP_H,
+      encounterBudget: snapshot.encounterBudget || 1,
+      scale: snapshot.scale || { partySize: Object.keys(snapshot.characters || {}).length || 1 },
+      characters: snapshot.characters || {},
+      enemies: snapshot.enemies || [],
+      world: snapshot.world || {
+        mapId: snapshot.mapId || 'taverna_arton',
+        mapW: snapshot.mapW || MAP_W,
+        mapH: snapshot.mapH || MAP_H,
+        entities: [],
+        tiles: buildTavernTiles(MAP_W, MAP_H),
+      },
+      log: snapshot.log || [],
+      turn: snapshot.turn || null,
+      outcome: snapshot.outcome || null,
+      createdAt: snapshot.createdAt || Date.now(),
+    };
+
+    // Garante kind nos personagens
+    for (const c of Object.values(session.characters)) {
+      c.kind = 'player';
+    }
+    for (const e of session.enemies) {
+      e.kind = 'enemy';
+    }
+
+    this.syncEntities(session);
+    this.sessions.set(session.id, session);
+    return session;
+  }
+
+  async ensureLoaded(partyId) {
+    let session = this.getByParty(partyId);
+    if (session) return session;
+    const snap = await GameFinder.loadSessionByParty(partyId);
+    if (!snap) return null;
+    return this.rehydrate(snap);
+  }
+
   publicWorld(session) {
     this.syncEntities(session);
     return {
