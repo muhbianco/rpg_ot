@@ -6,6 +6,17 @@ const { hudPayload } = require('../character/CharacterService');
 const GameFinder = require('../db/GameFinder');
 const GmService = require('../gm/GmService');
 const { SKILLS, tickCooldowns } = require('../rules/skills');
+const {
+  layoutKeyForAdventure,
+  seedNpcsForLayout,
+  upsertNpcs,
+  buildSceneTiles,
+} = require('./SceneBuilder');
+const {
+  buildFallbackCampaign,
+  currentRoom,
+  questPayload,
+} = require('./AdventureCampaign');
 
 const MAP_W = 12;
 const MAP_H = 10;
@@ -44,34 +55,43 @@ class GameSessionService {
       });
     });
 
-    // RPG de mesa: começa em narrativa — sem inimigos no tabuleiro.
+    // RPG de mesa: campanha multi-sala (objetivos + progressão).
     const enemies = [];
     const adventure = this.gm.pickAdventureSeed();
+    const campaign = buildFallbackCampaign(adventure);
+    const room0 = campaign.rooms[0];
+    const layoutKey = room0.layoutKey || layoutKeyForAdventure(adventure);
+    adventure.layoutKey = layoutKey;
 
     const session = {
       id: uuidv4(),
       partyId: party.id,
-      mapId: 'cena_aberta',
+      mapId: layoutKey,
       mapW: MAP_W,
       mapH: MAP_H,
       encounterBudget: scale.budget,
       scale,
       adventure,
+      campaign,
       inCombat: false,
       characters,
       enemies,
+      npcs: [],
       world: {
-        mapId: 'cena_aberta',
+        mapId: layoutKey,
         mapW: MAP_W,
         mapH: MAP_H,
+        layoutKey,
         entities,
-        tiles: buildTavernTiles(MAP_W, MAP_H),
+        tiles: buildSceneTiles(layoutKey, MAP_W, MAP_H),
       },
       log: [],
       turn: null,
       outcome: null,
       createdAt: Date.now(),
     };
+
+    upsertNpcs(session, room0.npcs?.length ? room0.npcs : seedNpcsForLayout(layoutKey));
 
     session.turn = {
       order: ['gm', ...members.map((m) => m.playerId)],
@@ -83,6 +103,7 @@ class GameSessionService {
     party.status = 'active';
     party.sessionId = session.id;
     this.sessions.set(session.id, session);
+    this.syncEntities(session);
 
     GameFinder.saveParty(party).catch(() => {});
     GameFinder.saveSession(session).catch(() => {});
@@ -183,15 +204,17 @@ class GameSessionService {
       encounterBudget: snapshot.encounterBudget || 1,
       scale: snapshot.scale || { partySize: Object.keys(snapshot.characters || {}).length || 1 },
       adventure: snapshot.adventure || null,
+      campaign: snapshot.campaign || null,
       inCombat: Boolean(snapshot.inCombat) || (snapshot.enemies || []).some((e) => e.hp > 0),
       characters: snapshot.characters || {},
       enemies: snapshot.enemies || [],
+      npcs: snapshot.npcs || [],
       world: snapshot.world || {
-        mapId: snapshot.mapId || 'taverna_arton',
+        mapId: snapshot.mapId || 'tavern',
         mapW: snapshot.mapW || MAP_W,
         mapH: snapshot.mapH || MAP_H,
         entities: [],
-        tiles: buildTavernTiles(MAP_W, MAP_H),
+        tiles: buildSceneTiles(snapshot.adventure?.layoutKey || 'tavern', MAP_W, MAP_H),
       },
       log: snapshot.log || [],
       turn: snapshot.turn || null,
@@ -250,6 +273,19 @@ class GameSessionService {
         status: c.status,
       });
     }
+    for (const n of session.npcs || []) {
+      entities.push({
+        id: n.id,
+        kind: 'npc',
+        name: n.name,
+        role: n.role,
+        mood: n.mood,
+        x: n.x,
+        y: n.y,
+        color: n.color,
+        interactable: true,
+      });
+    }
     for (const e of session.enemies) {
       if (e.hp <= 0) continue;
       entities.push({
@@ -265,6 +301,7 @@ class GameSessionService {
       });
     }
     session.world.entities = entities;
+    session.world.layoutKey = session.adventure?.layoutKey || session.world.layoutKey || session.mapId;
   }
 
   partyHudList(session) {
@@ -422,20 +459,120 @@ class GameSessionService {
     return { narrative, combat, effects };
   }
 
+  /**
+   * Aplica layout/NPCs da sala atual da campanha ao tabuleiro.
+   */
+  applyCurrentRoom(session, { resetPlayers = true } = {}) {
+    const room = currentRoom(session.campaign);
+    if (!room) return null;
+    const layoutKey = room.layoutKey || 'tavern';
+    session.mapId = layoutKey;
+    session.world.mapId = layoutKey;
+    session.world.layoutKey = layoutKey;
+    session.world.tiles = buildSceneTiles(layoutKey, session.mapW, session.mapH);
+    session.inCombat = false;
+    session.enemies = [];
+    session.npcs = [];
+    upsertNpcs(session, room.npcs?.length ? room.npcs : seedNpcsForLayout(layoutKey));
+    if (resetPlayers) {
+      let i = 0;
+      for (const c of Object.values(session.characters)) {
+        c.x = 2 + (i % 4);
+        c.y = 7 + Math.floor(i / 4);
+        i += 1;
+      }
+    }
+    this.syncEntities(session);
+    return room;
+  }
+
+  /**
+   * Avança para a próxima sala se o objetivo foi cumprido.
+   * @returns {{ advanced: boolean, finished: boolean, segment?: object, quest?: object }}
+   */
+  tryAdvanceRoom(session, objectiveProgress) {
+    if (objectiveProgress !== 'complete' || !session.campaign) {
+      return { advanced: false, finished: false, quest: questPayload(session.campaign) };
+    }
+
+    const camp = session.campaign;
+    const room = currentRoom(camp);
+    if (room) room.status = 'done';
+    camp.completedCount = (camp.completedCount || 0) + 1;
+
+    if (camp.roomIndex >= camp.rooms.length - 1) {
+      return {
+        advanced: false,
+        finished: true,
+        quest: questPayload(camp),
+        segment: {
+          by: 'gm',
+          name: 'Mestre',
+          narrative:
+            `Objetivo cumprido em ${room?.name || 'cena final'}! A aventura "${camp.title}" chega ao fim. ` +
+            `A party escreveu mais um capítulo em Arton.`,
+          combat: [],
+          effects: [],
+        },
+      };
+    }
+
+    camp.roomIndex += 1;
+    const next = currentRoom(camp);
+    if (next) next.status = 'active';
+    this.applyCurrentRoom(session, { resetPlayers: true });
+
+    return {
+      advanced: true,
+      finished: false,
+      quest: questPayload(camp),
+      segment: {
+        by: 'gm',
+        name: 'Mestre',
+        narrative:
+          `Objetivo cumprido! A party deixa ${room?.name || 'a cena anterior'} e chega a ${next.name}. ` +
+          `Novo objetivo: ${next.objective}`,
+        combat: [],
+        effects: [{ type: 'spawn', id: session.npcs[0]?.id, kind: 'npc', name: session.npcs[0]?.name }],
+      },
+    };
+  }
+
+  questPayload(session) {
+    return questPayload(session.campaign);
+  }
+
   async openingTurn(session) {
     const base = this.runGmTurn(session, { intro: true });
     try {
-      const intro = await this.gm.generateIntro(session);
-      if (intro.adventure) session.adventure = intro.adventure;
-      if (intro.narrative) base.narrative = intro.narrative;
+      const generated = await this.gm.generateCampaign(session);
+      if (generated.campaign) {
+        session.campaign = generated.campaign;
+        session.adventure = {
+          ...(session.adventure || {}),
+          title: generated.campaign.title,
+          hook: generated.campaign.premise,
+          setting: generated.campaign.rooms?.[0]?.name,
+          layoutKey: generated.campaign.rooms?.[0]?.layoutKey,
+        };
+        this.applyCurrentRoom(session, { resetPlayers: true });
+      }
+      if (generated.narrative) base.narrative = generated.narrative;
+      if (Array.isArray(generated.npcs) && generated.npcs.length) {
+        session.npcs = [];
+        upsertNpcs(session, generated.npcs);
+      }
+      const room = currentRoom(session.campaign);
+      const objLine = room ? ` [Objetivo: ${room.objective}]` : '';
       GameFinder.saveGmMemory(
         session.id,
-        `Abertura: ${session.adventure?.title || ''} — ${intro.narrative}`.slice(0, 4000)
+        `Campanha: ${session.campaign?.title || ''} | Sala 1/${session.campaign?.rooms?.length || '?'} ${room?.name || ''} — ${generated.narrative}${objLine}`.slice(0, 4000)
       ).catch(() => {});
     } catch (err) {
       console.error('[opening]', err.message);
     }
 
+    this.syncEntities(session);
     session.log.push({ at: Date.now(), playerId: null, rawText: '[intro]', narrative: base.narrative });
     session.outcome = this.checkOutcome(session);
     if (!session.outcome) this.advanceTurn(session);
@@ -445,6 +582,7 @@ class GameSessionService {
       segment: { by: 'gm', name: 'Mestre', ...base },
       turn: this.turnPayload(session),
       outcome: session.outcome,
+      quest: questPayload(session.campaign),
     };
   }
 
@@ -474,14 +612,29 @@ class GameSessionService {
 
   async submitPlayerAction(session, playerId, rawText) {
     const playerSeg = await this.resolvePlayerAction(session, playerId, rawText);
-    const prog = this.progressAfterActor(session);
+    const segments = [playerSeg];
+
+    const advance = this.tryAdvanceRoom(session, playerSeg.objectiveProgress);
+    if (advance.segment) segments.push(advance.segment);
+
+    let outcome = null;
+    if (advance.finished) {
+      session.outcome = 'victory';
+      outcome = 'victory';
+    } else {
+      const prog = this.progressAfterActor(session);
+      segments.push(...prog.segments);
+      outcome = prog.outcome;
+    }
+
     this.syncEntities(session);
     GameFinder.saveSession(session).catch(() => {});
     return {
-      segments: [playerSeg, ...prog.segments],
+      segments,
       turn: this.turnPayload(session),
-      outcome: prog.outcome,
+      outcome,
       hud: hudPayload(session.characters[playerId]),
+      quest: advance.quest || questPayload(session.campaign),
     };
   }
 
@@ -598,6 +751,14 @@ class GameSessionService {
     const combat = [];
     const effects = [];
 
+    // NPCs sugeridos pelo mestre entram no tabuleiro
+    if (Array.isArray(gmOut.npcs) && gmOut.npcs.length) {
+      const added = upsertNpcs(session, gmOut.npcs);
+      for (const n of added) {
+        effects.push({ type: 'spawn', id: n.id, kind: 'npc', name: n.name, x: n.x, y: n.y });
+      }
+    }
+
     // Se o jogador partiu para a luta e ainda não há encontro, inicia combate alinhado à aventura.
     const wantsFight = (gmOut.intents || []).some((i) =>
       i.type === 'attack' || i.type === 'cast' || i.type === 'skill'
@@ -666,6 +827,8 @@ class GameSessionService {
         healed: c.healed || 0,
       })),
       mercyScore: mercy.score,
+      objectiveProgress: gmOut.objectiveProgress || 'none',
+      objectiveNote: gmOut.objectiveNote || null,
     };
   }
 
@@ -793,7 +956,22 @@ class GameSessionService {
       };
     }
 
-    if (type === 'inspect' || type === 'talk' || type === 'wait' || type === 'use_item') {
+    if (type === 'talk') {
+      const hint = String(intent.targetId || intent.target || '').toLowerCase();
+      const npc = (session.npcs || []).find((n) =>
+        !hint || n.name.toLowerCase().includes(hint) || n.role === hint
+      );
+      if (npc) {
+        return {
+          summary: `${actor.name} conversa com ${npc.name}.`,
+          outcome: 'ok',
+          effects: [{ type: 'focus', id: npc.id }],
+        };
+      }
+      return { summary: null, outcome: 'ok' };
+    }
+
+    if (type === 'inspect' || type === 'wait' || type === 'use_item') {
       return { summary: null, outcome: 'ok' };
     }
 
@@ -811,24 +989,6 @@ class GameSessionService {
     }
     return parts.filter(Boolean).join(' ') || 'A cena aguarda a próxima ação.';
   }
-}
-
-function buildTavernTiles(w, h) {
-  const tiles = [];
-  for (let y = 0; y < h; y += 1) {
-    for (let x = 0; x < w; x += 1) {
-      let type = 'floor';
-      if (x === 0 || y === 0 || x === w - 1 || y === h - 1) type = 'wall';
-      else if ((x === 3 || x === 4) && y === 3) type = 'table';
-      else if ((x === 7 || x === 8) && y === 5) type = 'table';
-      else if (x === 1 && y === 1) type = 'bar';
-      tiles.push({ x, y, type });
-    }
-  }
-  // porta
-  const door = tiles.find((t) => t.x === Math.floor(w / 2) && t.y === h - 1);
-  if (door) door.type = 'door';
-  return tiles;
 }
 
 module.exports = GameSessionService;

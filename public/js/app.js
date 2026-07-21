@@ -128,6 +128,7 @@
 
     socket.on('session:start', (payload) => {
       enterGame(payload);
+      if (payload.quest) renderQuest(payload.quest);
     });
 
     socket.on('session:state', (payload) => {
@@ -136,7 +137,12 @@
       if (payload.party) renderPartyHud(payload.party);
       if (payload.hud) renderHud(payload.hud);
       if (payload.turn) applyTurn(payload.turn);
+      if (payload.quest) renderQuest(payload.quest);
       highlightTurnActor(payload.turn);
+    });
+
+    socket.on('quest:update', (quest) => {
+      renderQuest(quest);
     });
 
     socket.on('turn:update', (turn) => {
@@ -156,8 +162,8 @@
 
     socket.on('game:over', (payload) => {
       const msg = payload.outcome === 'victory'
-        ? 'Vitória! Os inimigos foram derrotados.'
-        : 'Derrota. A party caiu na Taverna de Arton.';
+        ? 'Vitória! A aventura chegou ao desfecho — a party venceu a narrativa.'
+        : 'Derrota. A party caiu antes de concluir a aventura.';
       pushNarrative('Mestre', msg);
       setActionEnabled(false, 'Partida encerrada');
       if (payload.turn) applyTurn(payload.turn);
@@ -187,6 +193,7 @@
     renderPartyHud(payload.partyHud || payload.party || []);
     if (payload.hud) renderHud(payload.hud);
     if (payload.turn) applyTurn(payload.turn);
+    if (payload.quest) renderQuest(payload.quest);
     highlightTurnActor(payload.turn);
     (payload.log || []).forEach((l) => pushNarrative(l.who || 'Log', l.text));
   }
@@ -204,7 +211,29 @@
   function ensureRenderer() {
     if (!renderer) {
       const canvas = $('#game-canvas');
-      if (canvas && window.OtRenderer) renderer = new window.OtRenderer(canvas);
+      if (canvas && window.OtRenderer) {
+        renderer = new window.OtRenderer(canvas);
+        renderer.onSelect = (ent) => {
+          const hint = $('#scene-hint');
+          const input = $('#input-action');
+          if (!ent) return;
+          if (ent.kind === 'npc') {
+            if (hint) hint.textContent = 'Selecionado: ' + ent.name + ' (NPC) — falar / perguntar / ajudar';
+            if (input && !input.disabled) {
+              input.value = 'Falo com ' + ent.name + ': ';
+              input.focus();
+            }
+          } else if (ent.kind === 'enemy') {
+            if (hint) hint.textContent = 'Selecionado: ' + ent.name + ' — atacar / usar habilidade';
+            if (input && !input.disabled) {
+              input.value = 'Ataco ' + ent.name;
+              input.focus();
+            }
+          } else if (ent.kind === 'player') {
+            if (hint) hint.textContent = 'Aliado: ' + ent.name;
+          }
+        };
+      }
     }
   }
 
@@ -597,6 +626,16 @@
       if (currentTurn && currentTurn.current === p.playerId) li.classList.add('turn-active');
       ul.appendChild(li);
     });
+  }
+
+  function renderQuest(quest) {
+    if (!quest) return;
+    const title = $('#quest-title');
+    const room = $('#quest-room');
+    const obj = $('#quest-objective');
+    if (title) title.textContent = quest.title || 'Aventura';
+    if (room) room.textContent = `Sala ${quest.roomIndex || '?'}/${quest.roomTotal || '?'} · ${quest.roomName || '—'}`;
+    if (obj) obj.textContent = 'Objetivo: ' + (quest.objective || '—');
   }
 
   function applyTurn(turn) {

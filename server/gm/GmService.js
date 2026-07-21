@@ -1,54 +1,61 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const config = require('../config');
+const { currentRoom, normalizeCampaign, buildFallbackCampaign } = require('../game/AdventureCampaign');
 
 const SYSTEM_PROMPT = `Você é o Mestre de uma mesa de RPG Tormenta20 (Arton).
-Estilo: RPG de mesa narrativo — história viva, diálogos, exploração, tensão e consequências.
-NÃO é dungeon crawler: o tabuleiro só ilustra combate; a narrativa é o centro.
+Estilo: RPG de mesa narrativo longo — história viva, diálogos, exploração, tensão e consequências.
+A aventura tem VÁRIAS SALAS/CENAS. A party só avança de sala quando o objetivo da sala atual for cumprido.
+NÃO é dungeon crawler: o tabuleiro ilustra a cena; a narrativa é o centro.
 
 Regras obrigatórias:
 - NÃO role dados e NÃO invente números de dano/cura/HP.
-- NÃO invente itens, poderes, magias ou aliados que não estejam no estado do ator.
-- Magias: SÓ use type "cast" e spellKey se a magia estiver em actor.spells.
-- Habilidades: SÓ use type "skill" e skillKey se estiver em actor.skills com rank > 0.
-- Se o jogador pedir algo que não conhece (ex.: Guerreiro pedindo bola de fogo), narre a falha
-  (ele tenta e nada acontece / não sabe aquela magia) e use intent "wait" ou "inspect" — NUNCA cast/skill inválido.
-- Responda APENAS JSON válido no schema pedido.
-- partySize afeta a tensão: party grande = mundo mais hostil.
-- Se mercyScore do ator for alto, dê "colher de chá": pistas, NPCs hesitam, saídas narrativas.
-- intents devem refletir a ação real possível do personagem (attack/move/cast/skill/inspect/talk/use_item/wait).
-- spellKey válidos apenas se o ator tiver: missil_magico | bola_de_fogo | cura_ferimentos | luz.
-- Continuidade: cada sessão é uma aventura ÚNICA — avance a trama, não reinicie a taverna genérica.`;
+- NÃO invente itens, poderes, magias ou aliados que não estejam no estado.
+- Magias: SÓ "cast" se spellKey estiver em actor.spells.
+- Habilidades: SÓ "skill" se skillKey estiver em actor.skills com rank > 0.
+- Se o jogador pedir algo que não conhece, narre a falha e use wait/inspect.
+- Responda APENAS JSON válido.
+- Continuidade: respeite a sala atual, o objetivo e a memória.
+- Liste novos NPCs em "npcs" quando entrarem na cena.
+- objectiveProgress: "none" | "partial" | "complete"
+  - complete SOMENTE se o critério completeWhen da sala atual foi claramente atingido pela ação/narrativa.
+  - Não marque complete por combate genérico ou por o jogador só tentar algo.`;
 
 const ADVENTURE_SEEDS = [
   {
     title: 'O Cálice Roubado',
     setting: 'Taverna de Arton, noite chuvosa',
     hook: 'O taberneiro grita que o cálice sagrado de Valkaria sumiu do altar improvisado atrás do balcão.',
+    layoutKey: 'tavern',
   },
   {
     title: 'Sombras na Estrada Real',
     setting: 'Acampamento à beira da Estrada Real',
     hook: 'Um mensageiro sangrando cai entre as fogueiras pedindo escolta até o próximo posto — alguém o segue.',
+    layoutKey: 'road_camp',
   },
   {
     title: 'A Barganha do Corvo',
     setting: 'Mercado noturno de um vilarejo',
     hook: 'Um corvo mecânico entrega um bilhete: "Tragam a pedra azul antes do amanhecer, ou a criança some."',
+    layoutKey: 'market',
   },
   {
     title: 'Ruínas do Deus da Tormenta',
     setting: 'Ruínas semi-afundadas sob névoa',
     hook: 'Runas antigas pulsam; algo desperta sob as pedras e pede um nome em troca de passagem.',
+    layoutKey: 'ruins',
   },
   {
     title: 'Motim no Porto',
     setting: 'Doca fedorenta ao amanhecer',
     hook: 'Marinheiros cercam um capitão acusado de vender a tripulação a cultistas — a verdade não é simples.',
+    layoutKey: 'docks',
   },
   {
     title: 'O Funeral Que Não Era',
     setting: 'Capela de madeira na colina',
     hook: 'O caixão está vazio. A viúva jura ter visto o morto andando na névoa com olhos de fogo.',
+    layoutKey: 'chapel',
   },
 ];
 
@@ -71,7 +78,7 @@ class GmService {
         model: this.modelName,
         generationConfig: {
           temperature: 0.7,
-          maxOutputTokens: 2048,
+          maxOutputTokens: 4096,
           responseMimeType: 'application/json',
         },
       });
@@ -82,9 +89,6 @@ class GmService {
     return ADVENTURE_SEEDS[Math.floor(Math.random() * ADVENTURE_SEEDS.length)];
   }
 
-  /**
-   * Remove intents de magia/habilidade que o personagem não possui.
-   */
   sanitizeForActor(actor, gmOut) {
     const out = gmOut || { narrative: '', intents: [] };
     const spells = knownSpellSet(actor);
@@ -121,13 +125,31 @@ class GmService {
     }
 
     out.intents = intents;
+    if (!out.objectiveProgress) out.objectiveProgress = 'none';
+    if (!out.npcs) out.npcs = [];
     return out;
   }
 
   async narrate({ action, actor, session, memory, mercy }) {
+    const room = currentRoom(session.campaign);
     const context = {
       action,
-      adventure: session.adventure || null,
+      campaign: session.campaign
+        ? {
+            title: session.campaign.title,
+            premise: session.campaign.premise,
+            roomIndex: (session.campaign.roomIndex || 0) + 1,
+            roomTotal: session.campaign.rooms?.length || 0,
+          }
+        : null,
+      room: room
+        ? {
+            name: room.name,
+            objective: room.objective,
+            completeWhen: room.completeWhen,
+            layoutKey: room.layoutKey,
+          }
+        : null,
       actor: {
         name: actor.name,
         class: actor.classLabel || actor.classKey,
@@ -145,13 +167,21 @@ class GmService {
       enemies: session.enemies
         .filter((e) => e.hp > 0)
         .map((e) => ({ id: e.id, name: e.name, hp: `${e.hp}/${e.hpMax}`, x: e.x, y: e.y })),
+      npcs: (session.npcs || []).map((n) => ({
+        id: n.id,
+        name: n.name,
+        role: n.role,
+        mood: n.mood,
+        x: n.x,
+        y: n.y,
+      })),
       allies: Object.values(session.characters).map((c) => ({
         name: c.name,
         hp: `${c.hp}/${c.hpMax}`,
         x: c.x,
         y: c.y,
       })),
-      memory: (memory || '').slice(-1500),
+      memory: (memory || '').slice(-1800),
     };
 
     if (!this.enabled) {
@@ -166,16 +196,20 @@ ${JSON.stringify(context, null, 2)}
 
 Schema JSON:
 {
-  "narrative": "string (2–5 frases, tom de mesa de RPG)",
-  "intents": [{"type":"attack|move|inspect|talk|cast|skill|use_item|wait","targetId":"string|null","spellKey":"string|null","skillKey":"string|null","dx":0,"dy":0,"skillHint":"string|null"}],
+  "narrative": "string (3–6 frases; reaja à ação e ao objetivo da sala)",
+  "intents": [{"type":"attack|move|inspect|talk|cast|skill|use_item|wait","targetId":"string|null","spellKey":"string|null","skillKey":"string|null","dx":0,"dy":0}],
+  "npcs": [{"name":"string","role":"string","mood":"string"}],
+  "objectiveProgress": "none|partial|complete",
+  "objectiveNote": "string|null",
   "sceneHints": {"mood":"string","focusEntityId":"string|null"},
   "mercyNotes": "string|null"
 }`;
 
       const result = await this.model.generateContent(prompt);
-      const text = result.response.text();
-      const parsed = this.parseModelJson(text);
+      const parsed = this.parseModelJson(result.response.text());
       if (!parsed.intents) parsed.intents = [{ type: 'wait' }];
+      if (!parsed.npcs) parsed.npcs = [];
+      if (!parsed.objectiveProgress) parsed.objectiveProgress = 'none';
       if (!parsed.narrative) parsed.narrative = 'O mestre descreve a cena em silêncio tenso.';
       return this.sanitizeForActor(actor, parsed);
     } catch (err) {
@@ -184,53 +218,72 @@ Schema JSON:
     }
   }
 
-  /**
-   * Abertura narrativa única da sessão (IA ou seed).
-   */
-  async generateIntro(session) {
-    const adventure = session.adventure || this.pickAdventureSeed();
+  async generateCampaign(session) {
+    const seed = session.adventure || this.pickAdventureSeed();
     const party = Object.values(session.characters).map((c) => `${c.name} (${c.classLabel || c.classKey})`);
-    const enemies = session.enemies.filter((e) => e.hp > 0).map((e) => e.name);
 
     if (!this.enabled) {
+      const campaign = buildFallbackCampaign(seed);
+      const room = campaign.rooms[0];
       return {
+        campaign,
         narrative:
-          `Aventura: ${adventure.title}. ${adventure.setting}. ${adventure.hook} ` +
-          `Presentes: ${party.join(', ')}.` +
-          (enemies.length ? ` Ameaças à vista: ${enemies.join(', ')}.` : ''),
-        adventure,
+          `${campaign.title}. ${campaign.premise} ` +
+          `Vocês estão em ${room.name}. Objetivo: ${room.objective} Party: ${party.join(', ')}.`,
+        npcs: room.npcs || [],
       };
     }
 
     try {
-      const prompt = `Você é o Mestre de Tormenta20. Escreva a ABERTURA de uma aventura de mesa ÚNICA.
-Semente: ${JSON.stringify(adventure)}
+      const prompt = `Você é o Mestre de Tormenta20. Crie uma AVENTURA LONGA de mesa (não uma única sala).
+Semente: ${JSON.stringify(seed)}
 Party: ${party.join(', ')}
-Possíveis ameaças no cenário: ${enemies.join(', ') || 'nenhuma ainda'}
+
+layoutKey válidos: tavern | road_camp | market | ruins | docks | chapel
 
 Responda APENAS JSON:
 {
   "title": "string",
-  "setting": "string",
-  "narrative": "3–6 frases vividas abrindo a cena. Sem números de combate. Convide a party a agir."
-}`;
+  "premise": "1–2 frases do arco geral",
+  "rooms": [
+    {
+      "name": "nome da cena/sala",
+      "layoutKey": "tavern",
+      "objective": "o que a party precisa conquistar AQUI",
+      "completeWhen": "critério claro de sucesso desta sala",
+      "npcs": [{"name":"string","role":"string","mood":"string"}]
+    }
+  ],
+  "openingNarrative": "4–7 frases abrindo a PRIMEIRA sala, apresentando NPCs e o objetivo sem spoilar o final"
+}
+
+Regras: 4 a 6 salas; cada sala com objetivo distinto; progressão geográfica/narrativa; última sala é o desfecho.`;
+
       const result = await this.model.generateContent(prompt);
       const parsed = this.parseModelJson(result.response.text());
+      const campaign = normalizeCampaign(parsed, seed);
+      const room = campaign.rooms[0];
       return {
-        narrative: parsed.narrative || `${adventure.hook}`,
-        adventure: {
-          title: parsed.title || adventure.title,
-          setting: parsed.setting || adventure.setting,
-          hook: adventure.hook,
-        },
+        campaign,
+        narrative:
+          parsed.openingNarrative
+          || `${campaign.title}. ${campaign.premise} Vocês estão em ${room.name}. Objetivo: ${room.objective}`,
+        npcs: (parsed.rooms?.[0]?.npcs?.length ? parsed.rooms[0].npcs : room.npcs) || [],
       };
     } catch (err) {
-      console.error('[gm] intro falhou:', err.message);
+      console.error('[gm] campaign falhou:', err.message);
+      const campaign = buildFallbackCampaign(seed);
+      const room = campaign.rooms[0];
       return {
-        narrative: `${adventure.title}. ${adventure.setting}. ${adventure.hook}`,
-        adventure,
+        campaign,
+        narrative: `${campaign.title}. ${campaign.premise} Em ${room.name}: ${room.objective}`,
+        npcs: room.npcs || [],
       };
     }
+  }
+
+  async generateIntro(session) {
+    return this.generateCampaign(session);
   }
 
   extractJson(text) {
@@ -248,7 +301,6 @@ Responda APENAS JSON:
     try {
       return JSON.parse(raw);
     } catch (e1) {
-      // Tenta fechar aspas/chaves truncadas
       let fixed = raw
         .replace(/,\s*([}\]])/g, '$1')
         .replace(/[\u0000-\u001f]+/g, ' ');
@@ -263,13 +315,16 @@ Responda APENAS JSON:
         return JSON.parse(fixed);
       } catch (e2) {
         const narrative = this.pullField(raw, 'narrative')
+          || this.pullField(raw, 'openingNarrative')
           || this.pullField(text, 'narrative')
           || String(text || '').replace(/[{}\[\]"]/g, ' ').trim().slice(0, 500);
         if (!narrative) throw e1;
         console.warn('[gm] JSON parcial recuperado via narrative');
         return {
           narrative,
+          openingNarrative: narrative,
           intents: [{ type: 'wait' }],
+          objectiveProgress: 'none',
           title: this.pullField(raw, 'title') || undefined,
           setting: this.pullField(raw, 'setting') || undefined,
         };
@@ -292,8 +347,10 @@ Responda APENAS JSON:
     const lower = action.toLowerCase();
     const enemy = session.enemies.find((e) => e.hp > 0);
     const spells = knownSpellSet(actor);
+    const room = currentRoom(session.campaign);
     const intents = [];
     let narrative = `${actor.name} observa a cena com atenção.`;
+    let objectiveProgress = 'none';
 
     if (/atac|golpe|bater|ferir|lutar|espada|adaga|embate/.test(lower)) {
       if (enemy) {
@@ -323,9 +380,7 @@ Responda APENAS JSON:
         intents.push({ type: 'cast', spellKey: spell, targetId: enemy?.name || null });
       } else {
         const cls = actor.classLabel || actor.classKey || 'aventureiro';
-        narrative =
-          `${actor.name} concentra-se e tenta conjurar... mas como ${cls} não conhece essa magia. ` +
-          `Nada acontece além do olhar curioso dos presentes.`;
+        narrative = `${actor.name} concentra-se... mas como ${cls} não conhece essa magia.`;
         intents.push({ type: 'wait' });
       }
     } else if (/anda|vou|corro|mov|norte|sul|leste|oeste/.test(lower)) {
@@ -338,32 +393,33 @@ Responda APENAS JSON:
       if (/oeste|esquerda/.test(lower)) dx = -1;
       if (!dx && !dy) dy = -1;
       intents.push({ type: 'move', dx, dy });
-    } else if (/inspec|olho|procuro|olhar|exam/.test(lower)) {
-      narrative = mercy.score >= 0.4
-        ? `${actor.name} nota um detalhe útil — uma pista clara na cena.`
+    } else if (/inspec|olho|procuro|olhar|exam|pergun|pista|investig/.test(lower)) {
+      narrative = room
+        ? `${actor.name} investiga ${room.name}. Algo útil sobre o objetivo (“${room.objective}”) começa a surgir.`
         : `${actor.name} examina o entorno com cuidado.`;
       intents.push({ type: 'inspect' });
-    } else if (/falo|convers|digo|oi|olá|respondo|declaro|chamo|nome/.test(lower) || action.trim().split(/\s+/).length <= 6) {
-      const adv = session.adventure;
-      const setting = adv?.setting || 'a cena';
-      narrative =
-        `${actor.name} responde: "${action.trim()}". ` +
-        `Em ${setting}, a presença parece absorver as palavras — o ar vibra, runas ou olhares se voltam para o grupo. ` +
-        `Algo mudou. O que fazem a seguir?`;
-      intents.push({ type: 'talk', targetId: enemy?.name || null });
+      objectiveProgress = 'partial';
+    } else if (/falo|convers|digo|oi|olá|respondo|declaro|chamo|nome/.test(lower) || action.trim().split(/\s+/).length <= 8) {
+      const npc = (session.npcs || [])[0];
+      narrative = npc
+        ? `${actor.name} fala com ${npc.name}: "${action.trim()}". ${npc.name} reage — a conversa empurra a trama.`
+        : `${actor.name} responde: "${action.trim()}". A cena absorve as palavras.`;
+      intents.push({ type: 'talk', targetId: npc?.name || null });
+      objectiveProgress = 'partial';
     } else {
-      const adv = session.adventure;
-      narrative =
-        `${actor.name} age: "${action}". ` +
-        (adv
-          ? `Em ${adv.setting}, a trama de "${adv.title}" reage de forma sutil — um detalhe novo aparece, mas a tensão permanece.`
-          : 'A cena se rearrange em torno da ação.');
+      narrative = room
+        ? `${actor.name} age: "${action}". Em ${room.name}, a trama se move um pouco em direção a: ${room.objective}`
+        : `${actor.name} age: "${action}". A cena se rearrange.`;
       intents.push({ type: 'wait' });
+      objectiveProgress = 'partial';
     }
 
     return {
       narrative,
       intents,
+      npcs: [],
+      objectiveProgress,
+      objectiveNote: null,
       sceneHints: { mood: 'tense', focusEntityId: enemy?.id || null },
       mercyNotes: mercy.score >= 0.4 ? 'oferecer pista/saída' : null,
     };

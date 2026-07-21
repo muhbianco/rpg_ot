@@ -256,6 +256,7 @@ async function bootstrap() {
         party: partyHud,
         hud: hudPayload(char),
         turn: games.turnPayload(session),
+        quest: games.questPayload(session),
       });
     }
   }
@@ -500,6 +501,7 @@ async function bootstrap() {
           partyHud: games.partyHudList(session),
           hud: hudPayload(session.characters[player.id]),
           turn: games.turnPayload(session),
+          quest: games.questPayload(session),
           log: (session.log || []).slice(-20).map((l) => ({
             who: session.characters[l.playerId]?.name || 'Ação',
             text: l.narrative || l.rawText,
@@ -638,6 +640,7 @@ async function bootstrap() {
             world: games.publicWorld(session),
             party: games.partyHudList(session),
             turn: games.turnPayload(session),
+            quest: games.questPayload(session),
           });
           emitSessionToParty(session);
 
@@ -646,6 +649,9 @@ async function bootstrap() {
           emitSegment(party.id, opening.segment);
           emitSessionToParty(session);
           emitTurn(session);
+          if (opening.quest) {
+            io.to(`party:${snap.id}`).emit('quest:update', opening.quest);
+          }
         }
       } catch (err) {
         reply({ ok: false, error: err.message });
@@ -680,8 +686,9 @@ async function bootstrap() {
         for (const seg of result.segments) emitSegment(party.id, seg);
         emitSessionToParty(session);
         emitTurn(session);
+        if (result.quest) io.to(`party:${party.id}`).emit('quest:update', result.quest);
         if (result.outcome) endGame(party, session, result.outcome);
-        reply({ ok: true, result: { hud: result.hud, turn: result.turn, outcome: result.outcome } });
+        reply({ ok: true, result: { hud: result.hud, turn: result.turn, outcome: result.outcome, quest: result.quest } });
       } catch (err) {
         console.error('[action]', err);
         reply({ ok: false, error: err.message || 'Falha ao resolver ação.' });
