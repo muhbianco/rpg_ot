@@ -381,11 +381,55 @@ async function bootstrap() {
           endedAt: r.endedAt || null,
           canRejoin: r.status === 'active' && Boolean(r.sessionId),
           canResumeLobby: r.status === 'lobby' || r.status === 'hall',
+          canDelete: String(r.hostId) === String(player.id),
         }));
         reply({ ok: true, games: gamesList });
       } catch (err) {
         console.error('[games:list]', err.message);
         reply({ ok: false, error: 'Falha ao listar jogos.' });
+      }
+    });
+
+    socket.on('games:delete', async (data, cb) => {
+      const reply = typeof cb === 'function' ? cb : () => {};
+      const player = sockets.get(socket.id);
+      if (!player) return reply({ ok: false, error: 'Não autenticado.' });
+      const partyId = String(data?.partyId || '');
+      if (!partyId) return reply({ ok: false, error: 'Party inválida.' });
+
+      try {
+        let party = parties.get(partyId);
+        let hostId = party?.hostId || null;
+        if (!party) {
+          const row = await GameFinder.loadPartyById(partyId);
+          if (!row) return reply({ ok: false, error: 'Party não encontrada.' });
+          hostId = row.host_id;
+        }
+        if (String(hostId) !== String(player.id)) {
+          return reply({ ok: false, error: 'Só o dono da sala pode excluí-la.' });
+        }
+
+        // Notifica membros conectados antes de limpar
+        io.to(`party:${partyId}`).emit('games:deleted', { partyId, by: player.nickname });
+
+        games.removeByParty(partyId);
+        parties.purgeFromMemory(partyId);
+
+        const room = io.sockets.adapter.rooms.get(`party:${partyId}`);
+        if (room) {
+          for (const sid of [...room]) {
+            const sock = io.sockets.sockets.get(sid);
+            if (sock) sock.leave(`party:${partyId}`);
+          }
+        }
+
+        await GameFinder.deletePartyCascade(partyId);
+
+        const still = parties.getByPlayer(player.id);
+        reply({ ok: true, partyId, party: still ? parties.snapshot(still) : null });
+      } catch (err) {
+        console.error('[games:delete]', err);
+        reply({ ok: false, error: err.message || 'Falha ao excluir a sala.' });
       }
     });
 

@@ -241,6 +241,31 @@ async function isPartyMember(partyId, playerId) {
   return Boolean(rows[0]);
 }
 
+async function deletePartyCascade(partyId) {
+  const p = getPool();
+  const conn = await p.getConnection();
+  try {
+    await conn.beginTransaction();
+    const [sessions] = await conn.query(`SELECT id FROM sessions WHERE party_id = ?`, [partyId]);
+    const sessionIds = sessions.map((s) => s.id);
+    if (sessionIds.length) {
+      await conn.query(`DELETE FROM action_log WHERE session_id IN (?)`, [sessionIds]);
+      await conn.query(`DELETE FROM gm_memory WHERE session_id IN (?)`, [sessionIds]);
+      await conn.query(`DELETE FROM sessions WHERE party_id = ?`, [partyId]);
+    }
+    await conn.query(`DELETE FROM characters WHERE party_id = ?`, [partyId]);
+    await conn.query(`DELETE FROM party_members WHERE party_id = ?`, [partyId]);
+    const [result] = await conn.query(`DELETE FROM parties WHERE id = ?`, [partyId]);
+    await conn.commit();
+    return result.affectedRows > 0;
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
 async function logAction(sessionId, playerId, rawText, resolved) {
   const p = getPool();
   await p.query(
@@ -282,6 +307,7 @@ module.exports = {
   listPlayerGames,
   loadActionRecap,
   isPartyMember,
+  deletePartyCascade,
   logAction,
   saveGmMemory,
   getGmMemory,

@@ -79,6 +79,11 @@ html, body {
 .btn:hover { filter: brightness(1.08); }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn.secondary { background: linear-gradient(180deg, #5a4630, #3a2c1c); }
+.btn.danger {
+  background: linear-gradient(180deg, #7a3030, #4a1818);
+  border-color: #a04040;
+}
+.btn.danger:hover { filter: brightness(1.08); }
 .btn.ghost {
   background: transparent;
   border-color: var(--line);

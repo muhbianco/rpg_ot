@@ -136,6 +136,12 @@ class GameSessionService {
     return null;
   }
 
+  removeByParty(partyId) {
+    const session = this.getByParty(partyId);
+    if (session) this.sessions.delete(session.id);
+    return Boolean(session);
+  }
+
   /** Reidrata sessão a partir do snapshot persistido em world_state_json. */
   rehydrate(snapshot) {
     if (!snapshot?.id) return null;

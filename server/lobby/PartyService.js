@@ -245,6 +245,25 @@ class PartyService {
     return this.snapshot(party);
   }
 
+  /**
+   * Host remove a party da memória (DB é apagado pelo Finder).
+   * @returns {{ partyId, memberIds, sessionId }}
+   */
+  purgeFromMemory(partyId) {
+    const party = this.parties.get(partyId);
+    if (!party) {
+      return { partyId, memberIds: [], sessionId: null };
+    }
+    const memberIds = [...party.members.keys()];
+    const sessionId = party.sessionId || null;
+    for (const pid of memberIds) {
+      if (this.playerParty.get(pid) === partyId) this.playerParty.delete(pid);
+    }
+    this.codeIndex.delete(party.code);
+    this.parties.delete(partyId);
+    return { partyId, memberIds, sessionId };
+  }
+
   async rehydrateFromDb(partyId, sessionId = null) {
     if (this.parties.has(partyId)) return this.snapshot(this.parties.get(partyId));
 

@@ -160,6 +160,18 @@
       if (payload.turn) applyTurn(payload.turn);
     });
 
+    socket.on('game:deleted', (payload) => {
+      const deletedId = payload && payload.partyId;
+      if (party && deletedId && party.id === deletedId) {
+        party = null;
+        show('party');
+        renderParty();
+      }
+      if (screens.games && !screens.games.classList.contains('hidden')) {
+        loadGames();
+      }
+    });
+
     return socket;
   }
 
@@ -728,10 +740,48 @@
           btn.setAttribute('data-party-id', g.partyId);
           actions.appendChild(btn);
         }
+        if (g.canDelete) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'btn danger tiny';
+          btn.textContent = 'Excluir';
+          btn.setAttribute('data-nav', 'delete-game');
+          btn.setAttribute('data-party-id', g.partyId);
+          btn.setAttribute('data-party-code', g.code || '');
+          actions.appendChild(btn);
+        }
         li.appendChild(main);
         li.appendChild(actions);
         list.appendChild(li);
       });
+    });
+  }
+
+  function deleteGame(partyId, code) {
+    const errEl = $('#games-error');
+    if (errEl) errEl.textContent = '';
+    const label = code || partyId;
+    if (!window.confirm('Excluir a sala "' + label + '" permanentemente?\nTodos os dados (ficha, sessão e histórico) serão removidos.')) {
+      return;
+    }
+    let s;
+    try {
+      s = requireSocket();
+    } catch (e) {
+      if (errEl) errEl.textContent = 'Sem conexão.';
+      return;
+    }
+    s.emit('games:delete', { partyId: partyId }, (res) => {
+      if (!res || !res.ok) {
+        if (errEl) errEl.textContent = (res && res.error) || 'Falha ao excluir.';
+        return;
+      }
+      if (party && party.id === partyId) {
+        party = res.party || null;
+        show('party');
+        renderParty();
+      }
+      loadGames();
     });
   }
 
@@ -862,6 +912,11 @@
       if (nav === 'recap') {
         e.preventDefault();
         loadRecap(t.getAttribute('data-party-id'));
+        return;
+      }
+      if (nav === 'delete-game') {
+        e.preventDefault();
+        deleteGame(t.getAttribute('data-party-id'), t.getAttribute('data-party-code'));
         return;
       }
       if (nav === 'use-skill') {
