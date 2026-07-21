@@ -425,45 +425,100 @@ input, select {
 }
 .stage {
   display: grid;
-  grid-template-rows: auto minmax(42vh, 1fr) auto auto auto;
-  padding: 0.75rem;
-  gap: 0.6rem;
+  grid-template-rows: auto minmax(220px, 32vh) auto auto minmax(120px, 28vh);
+  padding: 0.75rem 1rem;
+  gap: 0.55rem;
   background:
     radial-gradient(ellipse at 50% 0%, rgba(196,92,42,0.12), transparent 50%),
     var(--bg0);
   min-height: 100vh;
   max-height: 100vh;
+  box-sizing: border-box;
 }
 .narrative {
-  min-height: 42vh;
+  min-height: 220px;
+  max-height: 32vh;
   height: auto;
   overflow-y: auto;
-  background: rgba(16, 12, 9, 0.92);
+  background: rgba(12, 9, 7, 0.94);
   border: 1px solid var(--line);
-  padding: 1rem 1.1rem;
-  font-size: 1.05rem;
-  line-height: 1.55;
+  padding: 0.55rem 0.65rem;
+  font-size: 0.92rem;
+  line-height: 1.35;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
 }
-.narrative .entry { margin-bottom: 0.85rem; }
-.narrative .who { color: var(--accent2); font-weight: 700; }
+.narrative .entry {
+  margin: 0;
+  padding: 0.45rem 0.6rem;
+  border-radius: 4px;
+  border-left: 3px solid transparent;
+  max-width: 92%;
+}
+.narrative .entry .who {
+  display: inline-block;
+  font-weight: 700;
+  font-size: 0.78rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  margin-right: 0.35rem;
+}
+.narrative .entry .msg {
+  color: var(--text, #e8dcc8);
+}
+.narrative .entry.from-gm {
+  align-self: flex-start;
+  background: rgba(90, 45, 20, 0.35);
+  border-left-color: var(--accent2, #c45c2a);
+}
+.narrative .entry.from-gm .who { color: #e8a060; }
+.narrative .entry.from-player {
+  align-self: flex-end;
+  background: rgba(30, 55, 70, 0.4);
+  border-left-color: #5a9ec4;
+  border-right: 3px solid #5a9ec4;
+  border-left-color: transparent;
+}
+.narrative .entry.from-player .who { color: #7ec4e8; }
+.narrative .entry.from-combat {
+  align-self: center;
+  max-width: 80%;
+  background: rgba(70, 25, 25, 0.35);
+  border-left-color: #c45a5a;
+  font-size: 0.85rem;
+}
+.narrative .entry.from-combat .who { color: #e88888; }
+.narrative .entry.from-system {
+  align-self: center;
+  max-width: 85%;
+  background: rgba(40, 40, 35, 0.5);
+  border-left-color: #888;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.narrative .entry.from-system .who { color: #aaa; }
 .action-form { display: flex; gap: 0.5rem; }
 .action-form input { margin: 0; }
 .scene-board {
   border-top: 1px solid var(--line);
-  padding-top: 0.4rem;
+  padding-top: 0.35rem;
+  min-height: 0;
 }
 .scene-label {
-  margin: 0 0 0.35rem;
+  margin: 0 0 0.25rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 #game-canvas {
   width: 100%;
-  max-height: 22vh;
+  max-height: 24vh;
+  height: 24vh;
   background: #0e0b08;
   border: 1px solid var(--line);
   image-rendering: pixelated;
   display: block;
+  object-fit: contain;
 }
 #game-canvas.fx-hit {
   animation: hitFlash 0.35s ease;

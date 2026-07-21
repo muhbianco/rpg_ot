@@ -644,17 +644,26 @@
     const log = $('#narrative-log');
     if (!log) return;
     const div = document.createElement('div');
-    div.className = 'entry';
+    const role = narrativeRole(who);
+    div.className = 'entry from-' + role;
     const whoEl = document.createElement('span');
     whoEl.className = 'who';
-    whoEl.textContent = who + ':';
+    whoEl.textContent = who;
     const msgEl = document.createElement('span');
     msgEl.className = 'msg';
-    msgEl.textContent = ' ' + text;
+    msgEl.textContent = text;
     div.appendChild(whoEl);
     div.appendChild(msgEl);
     log.appendChild(div);
     log.scrollTop = log.scrollHeight;
+  }
+
+  function narrativeRole(who) {
+    const w = String(who || '').toLowerCase();
+    if (w === 'mestre' || w === 'gm') return 'gm';
+    if (w === 'combate') return 'combat';
+    if (w === 'sistema' || w === 'log') return 'system';
+    return 'player';
   }
 
   function statusLabel(status) {
